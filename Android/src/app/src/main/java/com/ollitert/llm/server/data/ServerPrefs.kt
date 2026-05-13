@@ -159,6 +159,13 @@ private const val ENGAGEMENT_PROMPT_FIRST_THRESHOLD = 3
 private const val ENGAGEMENT_PROMPT_SECOND_THRESHOLD = 13
 
 // ═══════════════════════════════════════════════════════════════════════════
+// § GPU Availability — one-time dialog shown, server start dialog dismissed
+// ═══════════════════════════════════════════════════════════════════════════
+
+private const val KEY_GPU_UNAVAILABLE_DIALOG_SHOWN = "gpu_unavailable_dialog_shown"
+private const val KEY_GPU_UNAVAILABLE_SERVER_START_DISMISSED = "gpu_unavailable_server_start_dismissed"
+
+// ═══════════════════════════════════════════════════════════════════════════
 // § Model Update Detection — allowlist version, ignored updates
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -279,6 +286,10 @@ object ServerPrefs {
   // Home Assistant / STT
   private val HA_INTEGRATION_ENABLED = BoolPref(KEY_HA_INTEGRATION_ENABLED, false)
   private val STT_TRANSCRIPTION_PROMPT = BoolPref(KEY_STT_TRANSCRIPTION_PROMPT, DEFAULT_STT_TRANSCRIPTION_PROMPT)
+
+  // GPU Availability
+  private val GPU_UNAVAILABLE_DIALOG_SHOWN = BoolPref(KEY_GPU_UNAVAILABLE_DIALOG_SHOWN, false)
+  private val GPU_UNAVAILABLE_SERVER_START_DISMISSED = BoolPref(KEY_GPU_UNAVAILABLE_SERVER_START_DISMISSED, false)
 
   // Update Check
   private val UPDATE_CHECK_ENABLED = BoolPref(KEY_UPDATE_CHECK_ENABLED, DEFAULT_UPDATE_CHECK_ENABLED)
@@ -484,6 +495,16 @@ object ServerPrefs {
 
   fun isRejectWhenBusy(context: Context): Boolean = get(context, REJECT_WHEN_BUSY)
   fun setRejectWhenBusy(context: Context, enabled: Boolean) = set(context, REJECT_WHEN_BUSY, enabled)
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // § GPU Availability
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fun isGpuUnavailableDialogShown(context: Context): Boolean = get(context, GPU_UNAVAILABLE_DIALOG_SHOWN)
+  fun setGpuUnavailableDialogShown(context: Context, shown: Boolean) = set(context, GPU_UNAVAILABLE_DIALOG_SHOWN, shown)
+
+  fun isGpuUnavailableServerStartDismissed(context: Context): Boolean = get(context, GPU_UNAVAILABLE_SERVER_START_DISMISSED)
+  fun setGpuUnavailableServerStartDismissed(context: Context, dismissed: Boolean) = set(context, GPU_UNAVAILABLE_SERVER_START_DISMISSED, dismissed)
 
   // ══════════════════════════════════════════════════════════════════════════
   // § Home Assistant / STT

@@ -104,6 +104,7 @@ object GpuAvailability {
     // System.loadLibrary is authoritative: if it fails, OpenCL is not usable
     // regardless of which paths show the file. The file may physically exist
     // but the linker namespace prevents loading it.
+    // To test the GPU-unavailable UI on a device with OpenCL, change this to: val accessible = false
     val accessible = javaLoadSuccess
 
     Log.i(TAG, "OpenCL probe result: accessible=$accessible — $probeResults")
@@ -286,20 +287,11 @@ object ServerLlmModelHelper {
       ExperimentalFlags.enableConversationConstrainedDecoding =
         enableConversationConstrainedDecoding
       try {
-        // The SDK's sampler internally uses an OpenCL topK kernel. On devices where
-        // OpenCL is inaccessible (e.g. Pixel 5), passing SamplerConfig triggers
-        // "Can not find OpenCL library" at inference time. Pass null to let the SDK
-        // use its built-in non-OpenCL sampler path.
-        val useSampler = preferredBackend !is Backend.NPU && gpuAccessible
-        if (!useSampler && preferredBackend !is Backend.NPU) {
-          Log.i(TAG, "Skipping SamplerConfig (OpenCL unavailable) — SDK will use internal sampler")
-          RequestLogStore.addEvent(
-            "SamplerConfig disabled (OpenCL unavailable for topK sampler)",
-            level = LogLevel.INFO,
-            modelName = model.name,
-            category = EventCategory.MODEL,
-          )
-        }
+        // SDK issue #2211: the sampler .so has a linker dependency bug — on devices
+        // where OpenCL is inaccessible, sampler settings may be silently ignored.
+        // We pass SamplerConfig unconditionally (matching the reference app) because
+        // the SDK should handle the fallback internally. NPU uses its own sampler.
+        val useSampler = preferredBackend !is Backend.NPU
         val conversation =
           engine.createConversation(
             ConversationConfig(
@@ -374,11 +366,11 @@ object ServerLlmModelHelper {
             val conversation =
               fallbackEngine.createConversation(
                 ConversationConfig(
-                  samplerConfig = if (gpuAccessible) SamplerConfig(
+                  samplerConfig = SamplerConfig(
                     topK = topK,
                     topP = topP.toDouble(),
                     temperature = temperature.toDouble(),
-                  ) else null,
+                  ),
                   systemInstruction = systemInstruction,
                   tools = tools,
                   initialMessages = initialMessages,
@@ -459,12 +451,11 @@ object ServerLlmModelHelper {
         enableConversationConstrainedDecoding
       try {
         val isNpuBackend = accelerator == Accelerator.NPU.label || accelerator == Accelerator.TPU.label
-        val useSampler = !isNpuBackend && GpuAvailability.isOpenClAccessible
         val newConversation =
           engine.createConversation(
             ConversationConfig(
               samplerConfig =
-                if (useSampler) {
+                if (!isNpuBackend) {
                   SamplerConfig(
                     topK = topK,
                     topP = topP.toDouble(),

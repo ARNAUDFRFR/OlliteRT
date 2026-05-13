@@ -52,6 +52,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,6 +75,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ollitert.llm.server.R
 import com.ollitert.llm.server.common.GitHubConfig
+import com.ollitert.llm.server.data.ServerPrefs
+import com.ollitert.llm.server.runtime.GpuAvailability
+import com.ollitert.llm.server.ui.common.GpuUnavailableDialog
 import com.ollitert.llm.server.ui.theme.OlliteRTDeepBlue
 import com.ollitert.llm.server.ui.theme.OlliteRTPrimary
 import com.ollitert.llm.server.ui.theme.OlliteRTSurfaceContainerHigh
@@ -87,14 +94,22 @@ fun GettingStartedScreen(
   val configuration = LocalConfiguration.current
   // Landscape phones have very limited vertical space — reduce padding and spacers
   val isShortScreen = configuration.screenHeightDp < 500
+  var showGpuDialog by remember { mutableStateOf(false) }
+
+  fun proceedOrShowGpuDialog() {
+    if (!GpuAvailability.isOpenClAccessible && !ServerPrefs.isGpuUnavailableDialogShown(context)) {
+      showGpuDialog = true
+    } else {
+      onGetStartedClick()
+    }
+  }
 
   // After notification permission is handled, request battery optimization exemption
   // so the OS doesn't throttle/kill the foreground service while serving inference.
   val batteryOptLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.StartActivityForResult(),
   ) { _ ->
-    // Proceed regardless of whether the user granted the exemption
-    onGetStartedClick()
+    proceedOrShowGpuDialog()
   }
 
   /** Request battery optimization exemption, or proceed directly if already exempt. */
@@ -109,8 +124,7 @@ fun GettingStartedScreen(
       }
       batteryOptLauncher.launch(intent)
     } else {
-      // Already exempt — skip straight to the main app
-      onGetStartedClick()
+      proceedOrShowGpuDialog()
     }
   }
 
@@ -121,6 +135,16 @@ fun GettingStartedScreen(
   ) { _ ->
     // Proceed to battery optimization request regardless of notification result
     requestBatteryOptimizationExemption()
+  }
+
+  if (showGpuDialog) {
+    GpuUnavailableDialog(
+      onDismiss = {
+        showGpuDialog = false
+        ServerPrefs.setGpuUnavailableDialogShown(context, true)
+        onGetStartedClick()
+      },
+    )
   }
 
   // Outer Column splits the screen: scrollable content (weight) + pinned bottom actions.

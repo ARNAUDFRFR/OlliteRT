@@ -867,6 +867,15 @@
   <string name="inference_settings_thinking_unsupported">This model does not support thinking mode</string>
   <string name="inference_settings_accelerator">Accelerator</string>
   <string name="inference_settings_accelerator_only">This model only supports %1$s acceleration</string>
+
+  <!-- GPU Unavailable Dialog -->
+  <string name="gpu_unavailable_dialog_title">GPU Acceleration Unavailable</string>
+  <string name="gpu_unavailable_dialog_body">The OpenCL library required for GPU inference is not accessible on this device. This is a known limitation of the current version of LiteRT LM on some phones (e.g. Pixel 5).\n\nThe app will use CPU instead — inference works correctly but is slower. Sampler settings (TopK, TopP, Temperature) may not take effect.\n\nIf you\'d like GPU support for your device, consider raising an issue at the</string>
+  <string name="gpu_unavailable_dialog_link_text">LiteRT-LM GitHub</string>
+  <string name="gpu_unavailable_dialog_dont_show_again">Don\'t show this again</string>
+  <string name="gpu_unavailable_caption">GPU unavailable — OpenCL not accessible.</string>
+  <string name="gpu_unavailable_learn_more">Tap for more information</string>
+
   <string name="inference_settings_custom_system_prompt">Custom System Prompt</string>
   <string name="inference_settings_system_prompt_description">Prepended to every conversation as a system instruction</string>
   <string name="inference_settings_label_system_prompt" translatable="false">SYSTEM PROMPT</string>

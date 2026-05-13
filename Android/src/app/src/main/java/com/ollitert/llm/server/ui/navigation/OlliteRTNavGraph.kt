@@ -55,6 +55,8 @@ import com.ollitert.llm.server.data.ServerPrefs
 import com.ollitert.llm.server.ui.benchmark.BenchmarkScreen
 import com.ollitert.llm.server.ui.common.DonateDialog
 import com.ollitert.llm.server.ui.common.EngagementPromptDialog
+import com.ollitert.llm.server.ui.common.GpuUnavailableDialog
+import com.ollitert.llm.server.runtime.GpuAvailability
 import com.ollitert.llm.server.ui.gettingstarted.GettingStartedScreen
 import com.ollitert.llm.server.ui.modelmanager.GlobalModelManager
 import com.ollitert.llm.server.data.Model
@@ -132,6 +134,7 @@ fun OlliteRTNavHost(
   var manualStartPending by remember { mutableStateOf(false) }
   var showEngagementPrompt by remember { mutableStateOf(false) }
   var showDonateFromEngagement by remember { mutableStateOf(false) }
+  var showGpuServerStartDialog by remember { mutableStateOf(false) }
 
   LaunchedEffect(engagementServerStatus) {
     if (engagementServerStatus == ServerStatus.RUNNING && manualStartPending) {
@@ -172,6 +175,18 @@ fun OlliteRTNavHost(
     DonateDialog(onDismiss = { showDonateFromEngagement = false })
   }
 
+  if (showGpuServerStartDialog) {
+    GpuUnavailableDialog(
+      onDismiss = { showGpuServerStartDialog = false },
+      showDontShowAgain = true,
+      onDontShowAgainChecked = { checked ->
+        if (checked) {
+          ServerPrefs.setGpuUnavailableServerStartDismissed(context, true)
+        }
+      },
+    )
+  }
+
   NavHost(
     navController = navController,
     startDestination = startDestination,
@@ -203,6 +218,10 @@ fun OlliteRTNavHost(
           ServerPrefs.incrementManualStartCount(modelsContext)
           manualStartPending = true
           serverViewModel.startServer(modelName = model.name)
+          if (!GpuAvailability.isOpenClAccessible &&
+              !ServerPrefs.isGpuUnavailableServerStartDismissed(modelsContext)) {
+            showGpuServerStartDialog = true
+          }
         },
         onBenchmarkClicked = { model ->
           navController.navigate(OlliteRTRoutes.benchmark(model.name)) { launchSingleTop = true }

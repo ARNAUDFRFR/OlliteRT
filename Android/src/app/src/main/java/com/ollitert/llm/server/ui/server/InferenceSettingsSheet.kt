@@ -91,11 +91,17 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ollitert.llm.server.R
@@ -110,6 +116,8 @@ import com.ollitert.llm.server.data.ServerPrefs
 import com.ollitert.llm.server.data.Model
 import com.ollitert.llm.server.data.NumberSliderConfig
 import com.ollitert.llm.server.data.llmSupportThinking
+import com.ollitert.llm.server.runtime.GpuAvailability
+import com.ollitert.llm.server.ui.common.GpuUnavailableDialog
 import com.ollitert.llm.server.ui.common.SHEET_MAX_WIDTH
 import com.ollitert.llm.server.ui.common.TooltipIconButton
 import com.ollitert.llm.server.ui.theme.OlliteRTPrimary
@@ -158,11 +166,19 @@ fun InferenceSettingsSheet(
   // LiteRT LM SDK (0.10.0) to detect whether the device actually has an NPU/TPU. If a model's
   // allowlist entry includes "npu", we show it here; otherwise it stays hidden.
   val availableAccelerators = model.accelerators.ifEmpty { listOf(Accelerator.GPU) }
+  val gpuAccessible = GpuAvailability.isOpenClAccessible
   var selectedAccelerator by remember {
     val current = configValues[ConfigKeys.ACCELERATOR.id]?.toString() ?: ""
     val matched = availableAccelerators.find { it.label.equals(current, ignoreCase = true) }
-    mutableStateOf(matched ?: availableAccelerators.first())
+    val resolved = matched ?: availableAccelerators.first()
+    val effective = if (resolved == Accelerator.GPU && !gpuAccessible) {
+      availableAccelerators.find { it == Accelerator.CPU } ?: resolved
+    } else {
+      resolved
+    }
+    mutableStateOf(effective)
   }
+  var showGpuInfoDialog by remember { mutableStateOf(false) }
 
   // Extract per-model min/max limits from NumberSliderConfig objects
   val limits = remember(model) {
@@ -202,6 +218,10 @@ fun InferenceSettingsSheet(
   var topPForceError by remember { mutableStateOf(false) }
   val outOfRangeMessage = stringResource(R.string.inference_settings_error_out_of_range)
 
+  if (showGpuInfoDialog) {
+    GpuUnavailableDialog(onDismiss = { showGpuInfoDialog = false })
+  }
+
   // Reset confirmation dialog
   if (showResetDialog) {
     AlertDialog(
@@ -224,7 +244,11 @@ fun InferenceSettingsSheet(
           topK = defTopK
           topP = defTopP
           enableThinking = defThinking
-          selectedAccelerator = defAccelerator
+          selectedAccelerator = if (defAccelerator == Accelerator.GPU && !gpuAccessible) {
+            availableAccelerators.find { it == Accelerator.CPU } ?: defAccelerator
+          } else {
+            defAccelerator
+          }
           systemPrompt = ""
           val newValues = mutableMapOf<String, Any>()
           newValues.putAll(configValues)
@@ -422,7 +446,11 @@ fun InferenceSettingsSheet(
           AcceleratorToggle(
             options = availableAccelerators,
             selected = selectedAccelerator,
-            onSelect = { selectedAccelerator = it },
+            onSelect = { accelerator ->
+              if (accelerator == Accelerator.GPU && !gpuAccessible) return@AcceleratorToggle
+              selectedAccelerator = accelerator
+            },
+            disabledOptions = if (!gpuAccessible) setOf(Accelerator.GPU) else emptySet(),
           )
         }
         if (availableAccelerators.size == 1) {
@@ -432,6 +460,32 @@ fun InferenceSettingsSheet(
               R.string.inference_settings_accelerator_only,
               availableAccelerators.first().label,
             ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        if (!gpuAccessible && availableAccelerators.contains(Accelerator.GPU)) {
+          Spacer(modifier = Modifier.height(8.dp))
+          val captionText = buildAnnotatedString {
+            append(stringResource(R.string.gpu_unavailable_caption))
+            append(" ")
+            withLink(
+              link = LinkAnnotation.Clickable(
+                tag = "learn_more",
+                styles = TextLinkStyles(
+                  style = SpanStyle(
+                    color = MaterialTheme.colorScheme.primary,
+                    textDecoration = TextDecoration.Underline,
+                  ),
+                ),
+                linkInteractionListener = { showGpuInfoDialog = true },
+              ),
+            ) {
+              append(stringResource(R.string.gpu_unavailable_learn_more))
+            }
+          }
+          Text(
+            text = captionText,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -723,6 +777,7 @@ private fun AcceleratorToggle(
   options: List<Accelerator>,
   selected: Accelerator,
   onSelect: (Accelerator) -> Unit,
+  disabledOptions: Set<Accelerator> = emptySet(),
 ) {
   val segmentWidth = 70.dp
   val toggleWidth = segmentWidth * options.size
@@ -757,13 +812,14 @@ private fun AcceleratorToggle(
     Row(modifier = Modifier.matchParentSize().selectableGroup()) {
       options.forEach { accelerator ->
         val isSelected = accelerator == selected
+        val isDisabled = accelerator in disabledOptions
         Box(
           modifier = Modifier
             .weight(1f)
             .height(36.dp)
             .clip(RoundedCornerShape(50))
             .then(
-              if (singleOption) Modifier
+              if (singleOption || isDisabled) Modifier
               else Modifier.selectable(
                 selected = isSelected,
                 interactionSource = remember { MutableInteractionSource() },
@@ -774,8 +830,11 @@ private fun AcceleratorToggle(
           contentAlignment = Alignment.Center,
         ) {
           val textColor by animateColorAsState(
-            targetValue = if (isSelected) Color.Black
-              else MaterialTheme.colorScheme.onSurfaceVariant,
+            targetValue = when {
+              isDisabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+              isSelected -> Color.Black
+              else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
             animationSpec = tween(200),
             label = "accel_text_${accelerator.label}",
           )
