@@ -86,6 +86,9 @@ class InferenceRunner(
       (supportImage && !model.initializedWithVision)
     if (!needsReinit) return null
 
+    Log.i(TAG, "reinitIfNeeded: model='${model.name}' reason=${
+      if (model.instance == null) "no_instance" else "vision_upgrade"
+    } supportImage=$supportImage supportAudio=$supportAudio initializedWithVision=${model.initializedWithVision}")
     if (model.instance != null) {
       Log.i(TAG, "Re-initializing model for vision/audio support")
       ServerLlmModelHelper.safeCleanup(model)
@@ -102,6 +105,7 @@ class InferenceRunner(
       configOverrides = initConfig,
     )
     if (err.isNotEmpty()) {
+      Log.e(TAG, "reinitIfNeeded failed: $err")
       model.instance = null
       return err
     }

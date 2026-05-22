@@ -29,8 +29,12 @@ import com.ollitert.llm.server.data.DataStoreRepository
 import com.ollitert.llm.server.data.ServerPrefs
 import com.ollitert.llm.server.data.cleanupStaleImportTmpFiles
 import com.ollitert.llm.server.data.db.RequestLogPersistence
+import com.ollitert.llm.server.service.EventCategory
+import com.ollitert.llm.server.service.LogLevel
+import com.ollitert.llm.server.service.RequestLogStore
 import com.ollitert.llm.server.worker.AllowlistRefreshWorker
 import com.ollitert.llm.server.worker.UpdateCheckWorker
+import java.io.File
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EarlyEntryPoint
@@ -130,6 +134,24 @@ class OlliteRTApplication : Application(), Configuration.Provider, SingletonImag
       entryPoint.requestLogPersistence().initialize()
     } catch (e: Exception) {
       Log.e(TAG, "Failed to initialize log persistence — logs will be in-memory only", e)
+    }
+
+    // Check for engine init breadcrumb — indicates the process was killed during model load.
+    try {
+      val breadcrumb = File(filesDir, "engine_init_breadcrumb.txt")
+      if (breadcrumb.exists()) {
+        val content = breadcrumb.readText()
+        Log.w(TAG, "Engine init breadcrumb found — previous model load crashed the process:\n$content")
+        RequestLogStore.addEvent(
+          "Previous model load crashed the process (breadcrumb found)",
+          level = LogLevel.ERROR,
+          category = EventCategory.MODEL,
+          body = content,
+        )
+        breadcrumb.delete()
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to check engine init breadcrumb", e)
     }
 
     // Clean up stale .tmp files from interrupted model imports to reclaim storage.

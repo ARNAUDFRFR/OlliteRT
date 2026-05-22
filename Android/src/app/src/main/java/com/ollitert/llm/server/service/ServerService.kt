@@ -517,6 +517,8 @@ class ServerService : Service() {
       checkStorageBeforeLoad()
       awaitPreviousCleanup()
 
+      Log.i(TAG, "loadModelOnThread: starting for '${model.name}' " +
+        "configValues=${model.configValues} capabilities=${model.capabilities}")
       val loadStart = SystemClock.elapsedRealtime()
       initializeOrWarmUp(model)
 
@@ -578,6 +580,10 @@ class ServerService : Service() {
     val eagerVision = ServerPrefs.isEagerVisionInit(this)
     val supportImage = model.llmSupportImage && eagerVision
     val supportAudio = model.llmSupportAudio
+    val maxTokens = model.configValues[com.ollitert.llm.server.data.ConfigKeys.MAX_TOKENS.id]
+    Log.i(TAG, "initializeOrWarmUp: model='${model.name}' thread=${Thread.currentThread().name} " +
+      "supportImage=$supportImage(capable=${model.llmSupportImage}, eager=$eagerVision) " +
+      "supportAudio=$supportAudio maxTokens=$maxTokens warmup=${ServerPrefs.isWarmupEnabled(this)}")
     if (ServerPrefs.isWarmupEnabled(this)) {
       inferenceRunner?.warmUpModel(model)
     } else {

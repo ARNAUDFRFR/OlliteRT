@@ -17,6 +17,7 @@
 
 package com.ollitert.llm.server.runtime
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.os.Environment
@@ -276,10 +277,67 @@ object ServerLlmModelHelper {
           else null,
       )
 
+    val memInfo = ActivityManager.MemoryInfo()
+    (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.getMemoryInfo(memInfo)
+    val availMb = memInfo.availMem / (1024 * 1024)
+    val totalMb = memInfo.totalMem / (1024 * 1024)
+    val lowMemory = memInfo.lowMemory
+    val modelSizeMb = File(modelPath).length() / (1024 * 1024)
+    val initSummary = "model='${model.name}' maxTokens=$maxTokens " +
+      "backend=${preferredBackend::class.simpleName} " +
+      "vision=${if (supportImage) visionBackend::class.simpleName else "disabled"} " +
+      "audio=${if (supportAudio) "CPU" else "disabled"} " +
+      "modelSize=${modelSizeMb}MB RAM=${availMb}MB/${totalMb}MB lowMemory=$lowMemory"
+    Log.i(TAG, "Engine init: $initSummary")
+    RequestLogStore.addEvent(
+      "Engine init: maxTokens=$maxTokens, " +
+        "vision=${if (supportImage) "ON" else "off"}, audio=${if (supportAudio) "ON" else "off"}, " +
+        "RAM=${availMb}MB/${totalMb}MB free, model=${modelSizeMb}MB, lowMem=$lowMemory",
+      level = LogLevel.INFO,
+      modelName = model.name,
+      category = EventCategory.MODEL,
+    )
+
+    // Write breadcrumb to disk BEFORE the native Engine() call. If the process is killed
+    // (OOM/SIGABRT), this file survives and shows what parameters caused the crash.
+    // On successful init, the file is deleted.
+    val breadcrumb = File(context.filesDir, "engine_init_breadcrumb.txt")
+    try {
+      breadcrumb.writeText(
+        "timestamp=${System.currentTimeMillis()}\n" +
+        "model=${model.name}\n" +
+        "maxTokens=$maxTokens\n" +
+        "backend=${preferredBackend::class.simpleName}\n" +
+        "visionBackend=${if (supportImage) visionBackend::class.simpleName else "null"}\n" +
+        "audioBackend=${if (supportAudio) "CPU" else "null"}\n" +
+        "modelSizeMB=$modelSizeMb\n" +
+        "availRAM_MB=$availMb\n" +
+        "totalRAM_MB=$totalMb\n" +
+        "lowMemory=$lowMemory\n" +
+        "thread=${Thread.currentThread().name}\n" +
+        "device=${Build.DEVICE} model=${Build.MODEL} SDK=${Build.VERSION.SDK_INT}\n"
+      )
+    } catch (_: Exception) { /* best-effort */ }
+
     var engine: Engine? = null
     try {
+      Log.i(TAG, "Creating Engine instance...")
+      val engineCreateStart = System.nanoTime()
       engine = Engine(engineConfig)
+      val engineCreateMs = (System.nanoTime() - engineCreateStart) / 1_000_000
+      Log.i(TAG, "Engine created in ${engineCreateMs}ms, calling initialize()...")
+
+      val engineInitStart = System.nanoTime()
       engine.initialize()
+      val engineInitMs = (System.nanoTime() - engineInitStart) / 1_000_000
+      Log.i(TAG, "Engine.initialize() completed in ${engineInitMs}ms")
+      RequestLogStore.addEvent(
+        "Engine ready: create=${engineCreateMs}ms, init=${engineInitMs}ms",
+        level = LogLevel.DEBUG,
+        modelName = model.name,
+        category = EventCategory.MODEL,
+      )
+      breadcrumb.delete()
 
       // THREAD SAFETY: This global flag has a set/read/reset race if initialize() and
       // resetConversation() overlap on different threads. Currently benign — all server-layer
@@ -292,6 +350,9 @@ object ServerLlmModelHelper {
         // We pass SamplerConfig unconditionally (matching the reference app) because
         // the SDK should handle the fallback internally. NPU uses its own sampler.
         val useSampler = preferredBackend !is Backend.NPU
+        Log.i(TAG, "Creating conversation (sampler=${useSampler}, tools=${tools.size}, " +
+          "initialMessages=${initialMessages.size})...")
+        val convStart = System.nanoTime()
         val conversation =
           engine.createConversation(
             ConversationConfig(
@@ -311,6 +372,8 @@ object ServerLlmModelHelper {
               automaticToolCalling = false,
             ),
           )
+        val convMs = (System.nanoTime() - convStart) / 1_000_000
+        Log.i(TAG, "Conversation created in ${convMs}ms")
         model.instance = LlmModelInstance(engine = engine, conversation = conversation)
       } finally {
         ExperimentalFlags.enableConversationConstrainedDecoding = false
@@ -356,10 +419,12 @@ object ServerLlmModelHelper {
               context.getExternalFilesDir(null)?.absolutePath
             else null,
         )
+        Log.i(TAG, "CPU fallback: creating Engine with vision=${supportImage}, audio=${supportAudio}, maxTokens=$maxTokens")
         var fallbackEngine: Engine? = null
         try {
           fallbackEngine = Engine(cpuConfig)
           fallbackEngine.initialize()
+          Log.i(TAG, "CPU fallback Engine.initialize() succeeded")
           ExperimentalFlags.enableConversationConstrainedDecoding =
             enableConversationConstrainedDecoding
           try {
