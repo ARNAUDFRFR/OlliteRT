@@ -18,8 +18,8 @@
 
 | Model | Size | Context | Capabilities | Min RAM | Best For |
 |:------|-----:|--------:|:-------------|--------:|:---------|
-| **Gemma 4 E2B** | 2.4 GB | 32K | Text · Vision · Audio · Thinking · Tools | 8 GB | All-rounder — chat, vision, audio, tool calling |
-| **Gemma 4 E4B** | 3.4 GB | 32K | Text · Vision · Audio · Thinking · Tools | 12 GB | Higher quality than E2B, same capabilities, needs more RAM |
+| **Gemma 4 E2B** | 2.4 GB | 32K | Text · Vision · Audio · Thinking · Tools · MTP | 8 GB | All-rounder — chat, vision, audio, tool calling |
+| **Gemma 4 E4B** | 3.4 GB | 32K | Text · Vision · Audio · Thinking · Tools · MTP | 12 GB | Higher quality than E2B, same capabilities, needs more RAM |
 | **Gemma 3n E2B** | 3.4 GB | 4K | Text · Vision · Audio | 8 GB | Vision and audio tasks on 8 GB devices |
 | **Gemma 3n E4B** | 4.6 GB | 4K | Text · Vision · Audio | 12 GB | Higher quality vision/audio on 12 GB+ devices |
 | **Gemma 3 1B** | 0.5 GB | 1K | Text | 6 GB | Smallest model, fastest responses, text-only |
@@ -50,6 +50,7 @@ All models are downloaded from [HuggingFace](https://huggingface.co/litert-commu
 | **Audio** | Send audio in API requests — the model can transcribe and respond via text to spoken content |
 | **Thinking** | Chain-of-thought reasoning mode — the model shows its reasoning process before answering (toggle per model in inference settings) |
 | **Tools** | **Experimental.** Function/tool calling via SDK schema injection (default) or prompt-based fallback. With schema injection enabled, tool schemas are registered directly with the LiteRT SDK for structured output. Best with Gemma 4 models, smaller models may not follow tool instructions reliably. See [Troubleshooting → Tool Calling](TROUBLESHOOTING.md#tool-calling-experimental) for tips |
+| **MTP** | Multi-Token Prediction (speculative decoding) — the model predicts multiple tokens at once for faster decode speed without quality loss. Requires a model file that includes an MTP draft head. Toggle per model in inference settings. See [FAQ → What is speculative decoding?](FAQ.md#what-is-speculative-decoding--mtp) |
 
 ## RAM Requirements
 

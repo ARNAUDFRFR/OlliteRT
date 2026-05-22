@@ -68,8 +68,8 @@
 
 | Model | Size | Min RAM | Context | Capabilities |
 |:------|-----:|--------:|--------:|:-------------|
-| **Gemma 4 E2B** ⭐ | 2.4 GB | 8 GB | 32K | Text · Vision · Audio · Thinking · Tools |
-| **Gemma 4 E4B** ⭐ | 3.4 GB | 12 GB | 32K | Text · Vision · Audio · Thinking · Tools |
+| **Gemma 4 E2B** ⭐ | 2.4 GB | 8 GB | 32K | Text · Vision · Audio · Thinking · Tools · MTP |
+| **Gemma 4 E4B** ⭐ | 3.4 GB | 12 GB | 32K | Text · Vision · Audio · Thinking · Tools · MTP |
 | **Gemma 3n E2B** | 3.4 GB | 8 GB | 4K | Text · Vision · Audio |
 | **Gemma 3n E4B** | 4.6 GB | 12 GB | 4K | Text · Vision · Audio |
 | **Gemma 3 1B** | 0.5 GB | 6 GB | 1K | Text |

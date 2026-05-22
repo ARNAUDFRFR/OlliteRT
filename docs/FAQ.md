@@ -26,6 +26,7 @@
 - [How do I monitor OlliteRT from Home Assistant?](#how-do-i-monitor-ollitert-from-home-assistant)
 - [How do I add or create a custom model source?](#how-do-i-add-or-create-a-custom-model-source)
 - [What do the log card footer badges mean?](#what-do-the-log-card-footer-badges-mean)
+- [What is speculative decoding / MTP?](#what-is-speculative-decoding--mtp)
 - [How do I update a downloaded model?](#how-do-i-update-a-downloaded-model)
 - [Why am I not seeing new app updates?](#why-am-i-not-seeing-new-app-updates)
 
@@ -275,6 +276,25 @@ When prompt compaction was applied, strategy badges (**Compacted**, **Truncated*
 
 > [!TIP]
 > The footer row is **horizontally scrollable** — swipe left to reveal badges that don't fit on screen, especially on smaller devices or with larger font sizes.
+
+---
+
+### What is speculative decoding / MTP?
+
+Multi-Token Prediction (MTP) is a speculative decoding technique where the model predicts multiple tokens at once instead of one at a time. This can **significantly speed up decoding** without any loss in output quality — the model produces the same text, just faster.
+
+**How it works:** The model file includes an MTP "draft head" that speculates several tokens ahead in parallel. If the speculations are correct (they usually are), multiple tokens are accepted in a single step. Incorrect speculations are discarded and the model falls back to normal single-token generation.
+
+**Requirements:**
+- A model file that includes the MTP draft head (indicated by the "MTP" capability)
+- Enabled in the model's inference settings (gear icon on the model card → Speculative Decoding toggle)
+
+**Currently supported:** Gemma 4 E2B and Gemma 4 E4B (requires the latest model file version — if your model was downloaded before MTP support was added, update the model to get the new file with the draft head included).
+
+> [!TIP]
+> If the toggle shows "Requires model update to take effect", download the latest version of the model to get MTP support. The toggle will become active after the update.
+
+For a deeper technical explanation, see Google Research's [Looking Back at Speculative Decoding](https://research.google/blog/looking-back-at-speculative-decoding/) blog post.
 
 ---
 
