@@ -292,9 +292,30 @@ class ModelLifecycle(
       }
     } ?: return null
 
+    // Resolve the actual on-disk version: the allowlist may point to a newer commitHash
+    // but the user still has an older file from updatableModelFiles.
+    resolveOnDiskVersion(model, externalDir)
+
     // Restore persisted inference config so settings survive app/service restarts
     ModelFactory.restoreInferenceConfig(context, model)
     return model
+  }
+
+  private fun resolveOnDiskVersion(model: Model, externalDir: File) {
+    if (model.localModelFilePathOverride.isNotEmpty()) return
+    val currentPath = File(externalDir, "${model.normalizedName}/${model.version}/${model.downloadFileName}")
+    if (currentPath.exists()) return
+
+    for (updatable in model.updatableModelFiles) {
+      if (updatable.commitHash.isEmpty()) continue
+      val oldPath = File(externalDir, "${model.normalizedName}/${updatable.commitHash}/${updatable.fileName}")
+      if (oldPath.exists()) {
+        model.version = updatable.commitHash
+        model.downloadFileName = updatable.fileName
+        model.updatable = true
+        return
+      }
+    }
   }
 
   // ── Model selection (per-request) ──────────────────────────────────────────
