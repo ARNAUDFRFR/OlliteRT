@@ -44,6 +44,7 @@ object ConfigKeys {
   val SUPPORT_AUDIO = ConfigKey("support_audio", "Support audio", R.string.config_label_support_audio)
   val SUPPORT_THINKING = ConfigKey("support_thinking", "Support thinking", R.string.config_label_support_thinking)
   val SUPPORT_TOOLS = ConfigKey("support_tools", "Support tools", R.string.config_label_support_tools)
+  val SUPPORT_SPECULATIVE_DECODING = ConfigKey("support_speculative_decoding", "Support speculative decoding", R.string.config_label_support_speculative_decoding)
   val ENABLE_THINKING = ConfigKey("enable_thinking", "Enable thinking", R.string.config_label_enable_thinking)
   val ENABLE_SPECULATIVE_DECODING = ConfigKey("enable_speculative_decoding", "Speculative decoding", R.string.config_label_enable_speculative_decoding)
   val ACCELERATOR = ConfigKey("accelerator", "Accelerator", R.string.config_label_accelerator)

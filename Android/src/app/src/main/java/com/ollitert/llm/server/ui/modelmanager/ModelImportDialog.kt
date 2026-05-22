@@ -31,6 +31,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -238,6 +239,7 @@ fun ModelImportDialog(
       put(ConfigKeys.SUPPORT_AUDIO.id, false)
       put(ConfigKeys.SUPPORT_THINKING.id, false)
       put(ConfigKeys.SUPPORT_TOOLS.id, false)
+      put(ConfigKeys.SUPPORT_SPECULATIVE_DECODING.id, false)
 
       for ((key, value) in defaultValues) {
         put(key.id, value)
@@ -335,6 +337,18 @@ fun ModelImportDialog(
               modifier = Modifier.weight(1f),
             )
           }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+          ) {
+            CompactToggle(
+              label = stringResource(ConfigKeys.SUPPORT_SPECULATIVE_DECODING.labelResId),
+              checked = values[ConfigKeys.SUPPORT_SPECULATIVE_DECODING.id] as? Boolean ?: false,
+              onCheckedChange = { values[ConfigKeys.SUPPORT_SPECULATIVE_DECODING.id] = it },
+              modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
+          }
         }
 
         // Button row.
@@ -359,6 +373,7 @@ fun ModelImportDialog(
               val supportAudio = safeConfigValue(values, ConfigKeys.SUPPORT_AUDIO, ValueType.BOOLEAN, false)
               val supportThinking = safeConfigValue(values, ConfigKeys.SUPPORT_THINKING, ValueType.BOOLEAN, false)
               val supportTools = safeConfigValue(values, ConfigKeys.SUPPORT_TOOLS, ValueType.BOOLEAN, false)
+              val supportSpeculativeDecoding = safeConfigValue(values, ConfigKeys.SUPPORT_SPECULATIVE_DECODING, ValueType.BOOLEAN, false)
               // Rejoin the user-edited stem with the original extension and sanitize.
               val editedStem = ensureValidFileName(
                 (values[ConfigKeys.NAME.id] as? String) ?: fileStem
@@ -380,6 +395,7 @@ fun ModelImportDialog(
                       .setSupportAudio(supportAudio)
                       .setSupportThinking(supportThinking)
                       .setSupportTools(supportTools)
+                      .setSupportSpeculativeDecoding(supportSpeculativeDecoding)
                       .build()
                   )
                   .build()
@@ -563,6 +579,7 @@ fun EditImportedModelDialog(
         put(ConfigKeys.SUPPORT_AUDIO.id, cfg.supportAudio)
         put(ConfigKeys.SUPPORT_THINKING.id, cfg.supportThinking)
         put(ConfigKeys.SUPPORT_TOOLS.id, cfg.supportTools)
+        put(ConfigKeys.SUPPORT_SPECULATIVE_DECODING.id, cfg.supportSpeculativeDecoding)
         if (cfg.compatibleAcceleratorsList.isNotEmpty()) {
           put(ConfigKeys.COMPATIBLE_ACCELERATORS.id, cfg.compatibleAcceleratorsList.joinToString(","))
         }
@@ -678,6 +695,18 @@ fun EditImportedModelDialog(
               modifier = Modifier.weight(1f),
             )
           }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+          ) {
+            CompactToggle(
+              label = stringResource(ConfigKeys.SUPPORT_SPECULATIVE_DECODING.labelResId),
+              checked = values[ConfigKeys.SUPPORT_SPECULATIVE_DECODING.id] as? Boolean ?: false,
+              onCheckedChange = { values[ConfigKeys.SUPPORT_SPECULATIVE_DECODING.id] = it },
+              modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
+          }
         }
 
         Row(
@@ -711,6 +740,7 @@ fun EditImportedModelDialog(
               val supportAudio = safeConfigValue(values, ConfigKeys.SUPPORT_AUDIO, ValueType.BOOLEAN, false)
               val supportThinking = safeConfigValue(values, ConfigKeys.SUPPORT_THINKING, ValueType.BOOLEAN, false)
               val supportTools = safeConfigValue(values, ConfigKeys.SUPPORT_TOOLS, ValueType.BOOLEAN, false)
+              val supportSpeculativeDecoding = safeConfigValue(values, ConfigKeys.SUPPORT_SPECULATIVE_DECODING, ValueType.BOOLEAN, false)
               val updated = ImportedModel.newBuilder()
                 .setFileName(newFileName)
                 .setFileSize(existingModel.fileSize)
@@ -726,6 +756,7 @@ fun EditImportedModelDialog(
                     .setSupportAudio(supportAudio)
                     .setSupportThinking(supportThinking)
                     .setSupportTools(supportTools)
+                    .setSupportSpeculativeDecoding(supportSpeculativeDecoding)
                     .build()
                 )
                 .build()
