@@ -4,7 +4,12 @@
   "packageRules": [
     {
       "matchManagers": ["gradle"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["gradle"],
       "matchPackageNames": ["com.google.ai.edge.litertlm:**"],
+      "enabled": true,
       "groupName": "LiteRT-LM",
       "automerge": false
     }
