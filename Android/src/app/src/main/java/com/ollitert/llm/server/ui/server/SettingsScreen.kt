@@ -63,6 +63,7 @@ import com.ollitert.llm.server.common.ServerStatus
 import com.ollitert.llm.server.ui.common.OlliteSearchBar
 import com.ollitert.llm.server.ui.common.SCREEN_CONTENT_MAX_WIDTH
 import com.ollitert.llm.server.ui.common.TooltipIconButton
+import com.ollitert.llm.server.ui.server.settings.AdvancedSettingsCard
 import com.ollitert.llm.server.ui.server.settings.AutoLaunchCard
 import com.ollitert.llm.server.ui.server.settings.CardId
 import com.ollitert.llm.server.ui.server.settings.ContextManagementCard
@@ -259,6 +260,9 @@ fun SettingsScreen(
     }
     AnimatedVisibility(visible = vm.cardVisible(CardId.DEVELOPER), enter = expandVertically(), exit = shrinkVertically()) {
       DeveloperCard(vm, context)
+    }
+    AnimatedVisibility(visible = vm.cardVisible(CardId.ADVANCED_SETTINGS), enter = expandVertically(), exit = shrinkVertically()) {
+      AdvancedSettingsCard(vm)
     }
     AnimatedVisibility(visible = vm.cardVisible(CardId.RESET), enter = expandVertically(), exit = shrinkVertically()) {
       ResetCard(vm)
