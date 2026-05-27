@@ -1,4 +1,4 @@
-name: Build Debug APK
+name: Build Custom APK
 
 on:
   push:
@@ -52,12 +52,46 @@ jobs:
       - name: Ensure Gradle wrapper is executable
         run: chmod +x ./gradlew
 
-      - name: Build Debug APK
+      - name: Check for signing secrets
+        id: check_secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "has_secrets=true" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets detected. Building signed release APK."
+          else
+            echo "has_secrets=false" >> "$GITHUB_OUTPUT"
+            echo "No signing secrets detected. Building default debug APK."
+          fi
+        working-directory: .
+
+      - name: Decode release keystore
+        if: steps.check_secrets.outputs.has_secrets == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+        working-directory: .
+
+      - name: Build Signed Release APK
+        if: steps.check_secrets.outputs.has_secrets == 'true'
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleStableRelease --no-daemon
+
+      - name: Build Default Debug APK
+        if: steps.check_secrets.outputs.has_secrets != 'true'
         run: ./gradlew assembleStableDebug --no-daemon
 
-      - name: Upload Debug APK Artifact
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OlliteRT-stable-debug-apk
-          path: Android/src/app/build/outputs/apk/stable/debug/*.apk
+          name: OlliteRT-custom-apk
+          path: |
+            Android/src/app/build/outputs/apk/stable/release/*.apk
+            Android/src/app/build/outputs/apk/stable/debug/*.apk
           retention-days: 14
