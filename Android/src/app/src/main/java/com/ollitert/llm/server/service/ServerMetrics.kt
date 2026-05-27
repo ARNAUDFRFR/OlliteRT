@@ -419,6 +419,9 @@ object ServerMetrics {
     val count = _inferringCount.decrementAndGet().coerceAtLeast(0)
     if (count == 0) _inferringCount.set(0)
     _isInferring.value = count > 0
+    if (count == 0) {
+      ServerService.resetIdleShutdownTimer()
+    }
   }
 
   fun onModelIdleUnloaded() {
