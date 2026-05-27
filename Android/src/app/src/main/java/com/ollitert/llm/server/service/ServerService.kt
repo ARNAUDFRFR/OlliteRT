@@ -80,6 +80,35 @@ class ServerService : Service() {
   private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private var loadJob: Job? = null
 
+  private val idleShutdownHandler = android.os.Handler(android.os.Looper.getMainLooper())
+  private val idleShutdownRunnable = Runnable { checkIdleShutdown() }
+  @Volatile private var lastRequestTime = System.currentTimeMillis()
+  @Volatile private var isIdleShutdown = false
+
+  private fun checkIdleShutdown() {
+    if (ServerMetrics.isInferring.value) {
+      // Reschedule in 1 minute
+      idleShutdownHandler.postDelayed(idleShutdownRunnable, 60_000L)
+      return
+    }
+    val elapsed = System.currentTimeMillis() - lastRequestTime
+    if (elapsed >= 10 * 60_000L) {
+      Log.i(TAG, "Server idle for 10 minutes — stopping service and closing app")
+      isIdleShutdown = true
+      stopSelf()
+    } else {
+      // Reschedule for the remaining time
+      val remaining = (10 * 60_000L) - elapsed
+      idleShutdownHandler.postDelayed(idleShutdownRunnable, remaining.coerceAtLeast(1000L))
+    }
+  }
+
+  fun resetIdleShutdownTimer() {
+    lastRequestTime = System.currentTimeMillis()
+    idleShutdownHandler.removeCallbacks(idleShutdownRunnable)
+    idleShutdownHandler.postDelayed(idleShutdownRunnable, 10 * 60_000L)
+  }
+
   // Notification state — saved after warmup so we can refresh the notification with live request count.
   // @Volatile: written from background load thread, read from main thread for notification refresh.
   @Volatile private var notifContentIntent: PendingIntent? = null
@@ -534,6 +563,7 @@ class ServerService : Service() {
       ServerMetrics.setSpeculativeDecodingEnabled(model.isSpeculativeDecodingEnabled)
       ServerMetrics.onServerRunning(wifiIp)
       resetKeepAliveTimer()
+      resetIdleShutdownTimer()
       RequestLogStore.addEvent("Model ready: ${model.name} (${SystemClock.elapsedRealtime() - loadStart}ms)", modelName = model.name, category = EventCategory.MODEL)
       logVerboseModelConfig(model)
       if (handleQueuedReload(model)) return
@@ -745,6 +775,7 @@ class ServerService : Service() {
   override fun onDestroy() {
     activeInstance = null
     cancelKeepAliveTimer()
+    idleShutdownHandler.removeCallbacks(idleShutdownRunnable)
     keepAliveUnloadedModelName = null
     // Invalidate any in-flight warmup thread so it won't transition to RUNNING after we stop
     loadGeneration.incrementAndGet()
@@ -843,6 +874,10 @@ class ServerService : Service() {
     modelLifecycle.destroy()
     serviceScope.cancel()
     super.onDestroy()
+    if (isIdleShutdown) {
+      Log.i(TAG, "Idle shutdown: terminating process")
+      android.os.Process.killProcess(android.os.Process.myPid())
+    }
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -858,6 +893,7 @@ class ServerService : Service() {
     if (ServerPrefs.isNotifShowRequestCount(this)) {
       refreshRunningNotification()
     }
+    resetIdleShutdownTimer()
     return "r${requestCounter.incrementAndGet()}"
   }
 
@@ -1072,12 +1108,12 @@ class ServerService : Service() {
       }
     }
 
-    /**
-     * Update config values on the running service's model without reloading.
-     * Used for non-reinitialization config changes (temperature, topK, topP, etc.).
-     */
     @Volatile
     private var activeInstance: ServerService? = null
+
+    fun resetIdleShutdownTimer() {
+      activeInstance?.resetIdleShutdownTimer()
+    }
 
     fun updateConfigValues(configValues: Map<String, Any>) {
       // TOCTOU: activeInstance may become null between this read and the synchronized block
