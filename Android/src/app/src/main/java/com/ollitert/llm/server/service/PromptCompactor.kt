@@ -100,20 +100,35 @@ object PromptCompactor {
       val nonSystemMsgs = messages.filter { it.role != "system" && it.role != "developer" }
 
       if (nonSystemMsgs.size > 1) {
-        // Try progressively fewer non-system messages until the prompt fits
-        for (keep in (nonSystemMsgs.size - 1) downTo 1) {
-          val truncatedMsgs = systemMsgs + nonSystemMsgs.takeLast(keep)
+        var low = 1
+        var high = nonSystemMsgs.size - 1
+        var bestCandidate: String? = null
+        var bestKeep = 0
+
+        while (low <= high) {
+          val mid = (low + high) ushr 1
+          val truncatedMsgs = systemMsgs + nonSystemMsgs.takeLast(mid)
           val candidate = if (hasTools) {
             PromptBuilder.buildToolAwarePrompt(truncatedMsgs, tools, toolChoice, chatTemplate, interleaveImagePlaceholders = interleaveImagePlaceholders)
           } else {
             PromptBuilder.buildChatPrompt(truncatedMsgs, chatTemplate, interleaveImagePlaceholders)
           }
+
           if (estimateTokens(candidate) <= maxContext) {
-            val dropped = nonSystemMsgs.size - keep
-            strategies.add("truncated:-$dropped msgs")
-            return CompactionResult(candidate, true, strategies)
+            bestCandidate = candidate
+            bestKeep = mid
+            low = mid + 1 // try to keep more messages
+          } else {
+            high = mid - 1 // try to keep fewer messages
           }
         }
+
+        if (bestCandidate != null) {
+          val dropped = nonSystemMsgs.size - bestKeep
+          strategies.add("truncated:-$dropped msgs")
+          return CompactionResult(bestCandidate, true, strategies)
+        }
+
         // Even keeping just 1 non-system message didn't fit — continue with truncated list
         currentMessages = systemMsgs + nonSystemMsgs.takeLast(1)
         strategies.add("truncated:-${nonSystemMsgs.size - 1} msgs")
@@ -219,15 +234,31 @@ object PromptCompactor {
       val nonSystemMsgs = messages.filter { it.role != "system" && it.role != "developer" }
 
       if (nonSystemMsgs.size > 1) {
-        for (keep in (nonSystemMsgs.size - 1) downTo 1) {
-          val truncatedMsgs = systemMsgs + nonSystemMsgs.takeLast(keep)
+        var low = 1
+        var high = nonSystemMsgs.size - 1
+        var bestCandidate: String? = null
+        var bestKeep = 0
+
+        while (low <= high) {
+          val mid = (low + high) ushr 1
+          val truncatedMsgs = systemMsgs + nonSystemMsgs.takeLast(mid)
           val candidate = PromptBuilder.buildConversationPrompt(truncatedMsgs, chatTemplate)
+
           if (estimateTokens(candidate) <= maxContext) {
-            val dropped = nonSystemMsgs.size - keep
-            strategies.add("truncated:-$dropped msgs")
-            return CompactionResult(candidate, true, strategies)
+            bestCandidate = candidate
+            bestKeep = mid
+            low = mid + 1 // try to keep more messages
+          } else {
+            high = mid - 1 // try to keep fewer messages
           }
         }
+
+        if (bestCandidate != null) {
+          val dropped = nonSystemMsgs.size - bestKeep
+          strategies.add("truncated:-$dropped msgs")
+          return CompactionResult(bestCandidate, true, strategies)
+        }
+
         strategies.add("truncated:-${nonSystemMsgs.size - 1} msgs")
       }
     }
