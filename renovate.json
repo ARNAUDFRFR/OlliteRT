@@ -1,20 +1,28 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "dependencyDashboard": false,
+  "extends": [
+    "config:recommended",
+    ":separateMajorReleases",
+    ":combinePatchMinorReleases"
+  ],
+  "dependencyDashboard": true,
   "labels": ["dependencies"],
   "packageRules": [
     {
       "matchManagers": ["gradle"],
-      "enabled": false
+      "enabled": true
     },
     {
       "matchManagers": ["gradle"],
       "matchPackageNames": ["com.google.ai.edge.litertlm:**"],
-      "enabled": true,
-      "groupName": "LiteRT-LM",
-      "automerge": false
+      "groupName": "LiteRT-LM"
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
     }
   ],
-  "schedule": ["* * */4 * *"]
+  "schedule": ["at any time"]
 }
