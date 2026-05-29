@@ -172,8 +172,8 @@ android {
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
   buildFeatures {
     compose = true
@@ -196,7 +196,7 @@ androidComponents {
 
 kotlin {
   compilerOptions {
-    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
   }
 }
 
@@ -266,7 +266,7 @@ val syncAllowlist by tasks.registering(Copy::class) {
 tasks.named("preBuild") { dependsOn(syncAllowlist) }
 
 protobuf {
-  protoc { artifact = "com.google.protobuf:protoc:4.34.1" }
+  protoc { artifact = "com.google.protobuf:protoc:${libs.versions.protobufJavaLite.get()}" }
   generateProtoTasks {
     all().forEach { task ->
       task.builtins {
