@@ -153,9 +153,8 @@ class EndpointHandlers(
       is ModelLifecycle.ModelSelection.Error -> return sel.toHttpResponse()
     }
     // Build prompt with progressive compaction if context window is exceeded.
-    // Three independent toggles for progressive prompt compaction:
-    // "Truncate History" (drop older messages), "Compact Tool Schemas" (reduce tool definitions,
-    // useful for Home Assistant), "Trim Prompt" (hard-cut as last resort).
+    // Two independent toggles: "Truncate History" (drop older messages) and
+    // "Trim Prompt" (hard-cut as last resort).
     val tools = req.tools.orEmpty()
     val hasTools = tools.isNotEmpty() && toolChoiceStr != "none"
     val useSchemaInjection = hasTools && prefs.schemaInjectionToolCalling
@@ -179,7 +178,6 @@ class EndpointHandlers(
       chatTemplate = null,
       maxContext = maxContext,
       truncateHistory = truncateHistory,
-      compactToolSchemas = false,
       trimPrompts = trimPrompts,
       interleaveImagePlaceholders = hasImageParts,
     )

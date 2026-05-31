@@ -1083,7 +1083,7 @@
   <string name="error_storage_insufficient">Insufficient storage to load model (%1$sMB free, need at least %2$sMB). Free up space by deleting unused models or files, then try again.</string>
 
   <!-- ErrorSuggestions: recovery suggestions -->
-  <string name="suggestion_context_overflow">Try enabling prompt compaction (Truncate History, Compact Tool Schemas, or Trim Prompt) in OlliteRT Settings, or send shorter prompts.</string>
+  <string name="suggestion_context_overflow">Enable \"Truncate Conversation History\" or \"Trim Prompt\" in OlliteRT Settings → Advanced Settings, or send a shorter prompt.</string>
   <string name="suggestion_timeout">Increase \"Chat completions timeout\" in OlliteRT Settings → Advanced Settings, send a shorter prompt, or restart the server.</string>
   <string name="suggestion_model_not_found">Check the Models screen for available downloaded models.</string>
   <string name="suggestion_model_files_missing">The model files may have been deleted. Try re-downloading the model from the Models screen.</string>

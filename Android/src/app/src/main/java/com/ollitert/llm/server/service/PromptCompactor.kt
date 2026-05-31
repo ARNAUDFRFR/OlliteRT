@@ -22,14 +22,11 @@ package com.ollitert.llm.server.service
  * When a prompt exceeds the model's max context tokens, strategies are applied
  * in order until the prompt fits:
  * 1. Conversation history truncation — keep system/developer messages + last N non-system messages
- * 2. Tool schema compaction — reduce to names+descriptions only
- * 3. Prompt trimming — hard-trim the string, keeping the tail (most recent content)
- * 4. Full tool removal — strip tool schemas entirely (only reachable when trimming is disabled)
+ * 2. Prompt trimming — hard-trim the string, keeping the tail (most recent content)
  *
  * Each strategy is gated by its own setting toggle:
  * - "Truncate Conversation History" gates history truncation
- * - "Compact Tool Schemas" gates tool compaction (2) and full tool removal (4)
- * - "Trim Prompt" gates hard-trimming; when enabled, trimming always resolves before (4)
+ * - "Trim Prompt" gates hard-trimming
  */
 object PromptCompactor {
 
@@ -54,7 +51,6 @@ object PromptCompactor {
    * @param chatTemplate Optional per-model chat template.
    * @param maxContext Max context tokens for the model (null = unknown, skip compaction).
    * @param truncateHistory Whether "Truncate Conversation History" is enabled.
-   * @param compactToolSchemas Whether "Compact Tool Schemas" is enabled.
    * @param trimPrompts Whether "Trim Prompt" is enabled.
    * @param interleaveImagePlaceholders When true, inserts image placeholder tokens between messages.
    */
@@ -65,7 +61,6 @@ object PromptCompactor {
     chatTemplate: String?,
     maxContext: Int?,
     truncateHistory: Boolean,
-    compactToolSchemas: Boolean,
     trimPrompts: Boolean,
     interleaveImagePlaceholders: Boolean = false,
   ): CompactionResult {
@@ -84,13 +79,11 @@ object PromptCompactor {
     }
 
     // No compaction toggle is enabled — return the oversized prompt and let inference error
-    if (!truncateHistory && !compactToolSchemas && !trimPrompts) {
+    if (!truncateHistory && !trimPrompts) {
       return CompactionResult(fullPrompt, false, emptyList())
     }
 
     val strategies = mutableListOf<String>()
-    var currentToolsCompact = false
-    var currentToolsRemoved = false
     var currentMessages = messages
 
     // --- Strategy 1: Conversation history truncation ---
@@ -120,30 +113,12 @@ object PromptCompactor {
       }
     }
 
-    // --- Strategy 2: Tool schema compaction ---
-    // Only compacts tools to names+descriptions. Does NOT remove tools — gives Strategy 3
-    // (trimming) a chance to fit the prompt with compact tools before escalating to removal.
-    if (hasTools && compactToolSchemas) {
-      val compactPrompt = PromptBuilder.buildToolAwarePrompt(
-        currentMessages, tools, toolChoice, chatTemplate, compact = true, interleaveImagePlaceholders = interleaveImagePlaceholders,
-      )
-      if (estimateTokens(compactPrompt) <= maxContext) {
-        strategies.add("tools:compacted")
-        return CompactionResult(compactPrompt, true, strategies)
-      }
-      currentToolsCompact = true
-      strategies.add("tools:compacted")
-    }
-
-    // --- Strategy 3: Prompt trimming ---
+    // --- Strategy 2: Prompt trimming ---
     if (trimPrompts) {
-      val currentPrompt = when {
-        hasTools && !currentToolsRemoved && currentToolsCompact ->
-          PromptBuilder.buildToolAwarePrompt(currentMessages, tools, toolChoice, chatTemplate, compact = true, interleaveImagePlaceholders = interleaveImagePlaceholders)
-        hasTools && !currentToolsRemoved ->
-          PromptBuilder.buildToolAwarePrompt(currentMessages, tools, toolChoice, chatTemplate, interleaveImagePlaceholders = interleaveImagePlaceholders)
-        else ->
-          PromptBuilder.buildChatPrompt(currentMessages, chatTemplate, interleaveImagePlaceholders)
+      val currentPrompt = if (hasTools) {
+        PromptBuilder.buildToolAwarePrompt(currentMessages, tools, toolChoice, chatTemplate, interleaveImagePlaceholders = interleaveImagePlaceholders)
+      } else {
+        PromptBuilder.buildChatPrompt(currentMessages, chatTemplate, interleaveImagePlaceholders)
       }
 
       val maxChars = maxContext * 4
@@ -155,26 +130,11 @@ object PromptCompactor {
       return CompactionResult(currentPrompt, strategies.isNotEmpty(), strategies)
     }
 
-    // --- Strategy 4: Full tool removal (last resort before giving up) ---
-    // Skip when tool_choice="required" — removing tools would make the contract impossible to satisfy.
-    if (hasTools && compactToolSchemas && !currentToolsRemoved && toolChoice != "required") {
-      val noToolsPrompt = PromptBuilder.buildChatPrompt(currentMessages, chatTemplate, interleaveImagePlaceholders)
-      if (estimateTokens(noToolsPrompt) <= maxContext) {
-        strategies.add("tools:removed")
-        return CompactionResult(noToolsPrompt, true, strategies)
-      }
-      currentToolsRemoved = true
-      strategies.add("tools:removed")
-    }
-
     // Compaction strategies exhausted or not enabled — return best effort
-    val bestPrompt = when {
-      hasTools && !currentToolsRemoved && currentToolsCompact ->
-        PromptBuilder.buildToolAwarePrompt(currentMessages, tools, toolChoice, chatTemplate, compact = true, interleaveImagePlaceholders = interleaveImagePlaceholders)
-      hasTools && !currentToolsRemoved ->
-        PromptBuilder.buildToolAwarePrompt(currentMessages, tools, toolChoice, chatTemplate, interleaveImagePlaceholders = interleaveImagePlaceholders)
-      else ->
-        PromptBuilder.buildChatPrompt(currentMessages, chatTemplate, interleaveImagePlaceholders)
+    val bestPrompt = if (hasTools) {
+      PromptBuilder.buildToolAwarePrompt(currentMessages, tools, toolChoice, chatTemplate, interleaveImagePlaceholders = interleaveImagePlaceholders)
+    } else {
+      PromptBuilder.buildChatPrompt(currentMessages, chatTemplate, interleaveImagePlaceholders)
     }
     return CompactionResult(bestPrompt, strategies.isNotEmpty(), strategies)
   }
