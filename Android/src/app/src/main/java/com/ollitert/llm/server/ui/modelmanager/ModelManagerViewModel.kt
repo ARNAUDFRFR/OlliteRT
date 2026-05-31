@@ -317,12 +317,14 @@ constructor(
     val action = if (model.imported) "Imported model deleted" else "Model deleted"
     // Log event messages are intentionally English-only — they're diagnostic output for
     // the Logs tab, not localizable UI strings.
-    RequestLogStore.addEvent(
-      "$action: ${model.name} (${model.sizeInBytes.humanReadableSize()})",
-      level = LogLevel.DEBUG,
-      modelName = model.name,
-      category = EventCategory.MODEL,
-    )
+    if (ServerPrefs.isVerboseDebugEnabled(context)) {
+      RequestLogStore.addEvent(
+        "$action: ${model.name} (${model.sizeInBytes.humanReadableSize()})",
+        level = LogLevel.DEBUG,
+        modelName = model.name,
+        category = EventCategory.MODEL,
+      )
+    }
 
     if (model.imported) {
       viewModelScope.launch(Dispatchers.IO) {
@@ -479,12 +481,14 @@ constructor(
       dataStoreRepository.saveImportedModels(importedModels = importedModels)
     }
 
-    RequestLogStore.addEvent(
-      "Model imported: ${info.fileName} (${info.fileSize.humanReadableSize()})",
-      level = LogLevel.DEBUG,
-      modelName = info.fileName,
-      category = EventCategory.MODEL,
-    )
+    if (ServerPrefs.isVerboseDebugEnabled(context)) {
+      RequestLogStore.addEvent(
+        "Model imported: ${info.fileName} (${info.fileSize.humanReadableSize()})",
+        level = LogLevel.DEBUG,
+        modelName = info.fileName,
+        category = EventCategory.MODEL,
+      )
+    }
   }
 
   /**
@@ -513,12 +517,14 @@ constructor(
       current.copy(models = updatedModels)
     }
 
-    RequestLogStore.addEvent(
-      "Imported model defaults updated: ${updatedInfo.fileName}",
-      level = LogLevel.DEBUG,
-      modelName = updatedInfo.fileName,
-      category = EventCategory.MODEL,
-    )
+    if (ServerPrefs.isVerboseDebugEnabled(context)) {
+      RequestLogStore.addEvent(
+        "Imported model defaults updated: ${updatedInfo.fileName}",
+        level = LogLevel.DEBUG,
+        modelName = updatedInfo.fileName,
+        category = EventCategory.MODEL,
+      )
+    }
   }
 
   /**
@@ -791,6 +797,7 @@ constructor(
   }
 
   private fun logRepoRefreshFailures(enabledRepos: List<Repository>, refreshResult: RefreshResult) {
+    if (!ServerPrefs.isVerboseDebugEnabled(context)) return
     for (repo in enabledRepos) {
       if (repo.id in refreshResult.failedRepoIds) {
         val name = repo.name.ifEmpty { repo.id }
