@@ -20,8 +20,12 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.util.Log
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.net.SocketException
+
+private const val TAG = "OlliteRT.WifiUtils"
 
 /** Checks whether the device currently has an active Wi-Fi connection. */
 fun isWifiConnected(context: Context): Boolean {
@@ -57,8 +61,9 @@ fun getWifiIpAddress(context: Context): String? {
         }
       }
     }
-  } catch (_: Exception) {
-    // Fall through
+  } catch (e: SocketException) {
+    // Expected when no WiFi (mobile-data only, airplane mode); fall through to null IP.
+    Log.d(TAG, "NetworkInterface enumeration failed; will fall through to null IP", e)
   }
 
   return null

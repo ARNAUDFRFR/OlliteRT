@@ -16,11 +16,13 @@
 
 package com.ollitert.llm.server.service
 
+import android.util.Log
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.ai.edge.litertlm.ToolProvider
 import com.google.ai.edge.litertlm.tool
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -28,6 +30,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+
+private const val TAG = "OlliteRT.SchemaInjectionBridge"
 
 /**
  * Bridge for SDK-based schema injection tool calling.
@@ -89,7 +93,10 @@ object SchemaInjectionBridge {
               val argsMap = try {
                 json.decodeFromString<JsonObject>(tc.function.arguments)
                   .let { jsonObjectToMap(it) }
-              } catch (_: Exception) { emptyMap() }
+              } catch (e: SerializationException) {
+                Log.w(TAG, "tool_call.arguments not valid JSON; treating as empty args", e)
+                emptyMap()
+              }
               com.google.ai.edge.litertlm.ToolCall(name = tc.function.name, arguments = argsMap)
             } ?: emptyList()
             Message.model(Contents.of(msg.content.text.ifEmpty { "" }), toolCalls)

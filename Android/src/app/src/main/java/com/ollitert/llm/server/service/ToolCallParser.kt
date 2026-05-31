@@ -16,10 +16,15 @@
 
 package com.ollitert.llm.server.service
 
+import android.util.Log
+import com.ollitert.llm.server.data.LOG_ERROR_PREVIEW_SHORT_CHARS
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+
+private const val TAG = "OlliteRT.ToolCallParser"
 
 /**
  * Parses tool/function call patterns from raw model text output.
@@ -194,7 +199,12 @@ object ToolCallParser {
     }
     if (end == -1) return emptyList()
     val arrayStr = text.substring(start, end + 1)
-    val array = try { json.parseToJsonElement(arrayStr) } catch (_: Exception) { return emptyList() }
+    val array = try {
+      json.parseToJsonElement(arrayStr)
+    } catch (e: SerializationException) {
+      Log.w(TAG, "tool-call array JSON malformed: ${arrayStr.take(LOG_ERROR_PREVIEW_SHORT_CHARS)}", e)
+      return emptyList()
+    }
     if (array !is kotlinx.serialization.json.JsonArray) return emptyList()
     val calls = array.mapNotNull { element ->
       if (element !is JsonObject) return@mapNotNull null
@@ -249,5 +259,10 @@ object ToolCallParser {
   }
 
   private fun parseJsonObjectSafe(str: String): JsonObject? =
-    try { json.parseToJsonElement(str).jsonObject } catch (_: Exception) { null }
+    try {
+      json.parseToJsonElement(str).jsonObject
+    } catch (e: Exception) {
+      Log.w(TAG, "tool-call JSON object parse failed: ${str.take(LOG_ERROR_PREVIEW_SHORT_CHARS)}", e)
+      null
+    }
 }

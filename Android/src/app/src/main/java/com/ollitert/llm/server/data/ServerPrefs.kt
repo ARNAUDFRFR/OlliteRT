@@ -18,6 +18,7 @@ package com.ollitert.llm.server.data
 
 import android.content.Context
 import android.util.Log
+import com.ollitert.llm.server.BuildConfig
 import androidx.core.content.edit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -307,7 +308,7 @@ object ServerPrefs {
   private val UPDATE_CHECK_ENABLED = BoolPref(KEY_UPDATE_CHECK_ENABLED, DEFAULT_UPDATE_CHECK_ENABLED)
   private val UPDATE_CHECK_INTERVAL_HOURS = IntPref(KEY_UPDATE_CHECK_INTERVAL_HOURS, DEFAULT_UPDATE_CHECK_INTERVAL_HOURS)
   private val UPDATE_CHECK_CONSECUTIVE_FAILURES = IntPref(KEY_UPDATE_CHECK_CONSECUTIVE_FAILURES, 0)
-  private val CROSS_CHANNEL_NOTIFY_ENABLED = BoolPref(KEY_CROSS_CHANNEL_NOTIFY_ENABLED, false)
+  private val CROSS_CHANNEL_NOTIFY_ENABLED = BoolPref(KEY_CROSS_CHANNEL_NOTIFY_ENABLED, BuildConfig.UPDATE_CHANNEL != "stable")
 
   // Engagement Prompt
   private val MANUAL_START_COUNT = IntPref(KEY_MANUAL_START_COUNT, 0)
@@ -976,7 +977,8 @@ internal fun decodeInferenceConfig(jsonStr: String?): Map<String, Any>? {
       }
     }
     migrateConfigKeys(result)
-  } catch (_: Exception) {
+  } catch (e: Exception) {
+    Log.w(TAG, "decodeInferenceConfig: malformed JSON, falling back to null", e)
     null
   }
 }
