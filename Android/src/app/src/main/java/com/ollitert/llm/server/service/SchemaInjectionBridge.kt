@@ -107,7 +107,23 @@ object SchemaInjectionBridge {
   fun buildInitialMessages(msgs: List<ChatMessage>): List<Message> {
     if (msgs.size <= 1) return emptyList()
     return msgs.dropLast(1)
-      .filter { it.role != "system" }
+      .filter { msg ->
+        // System messages are handled separately via systemInstruction; drop here.
+        if (msg.role == "system") return@filter false
+        // Drop empty assistant turns. OpenWebUI and Claude Code both insert placeholder
+        // assistant entries with empty content + no tool_calls when a prior response was
+        // empty or cancelled. Feeding those into LiteRT initialMessages tells the SDK
+        // "the model already finished its turn with nothing to say", which conditions
+        // the next sample to emit immediate EOS. Verified to produce 0-token completions
+        // on otherwise valid prompts when the dead turn was retained.
+        if (msg.role == "assistant" &&
+            msg.content.text.isBlank() &&
+            msg.content.parts.isEmpty() &&
+            msg.tool_calls.isNullOrEmpty()) {
+          return@filter false
+        }
+        true
+      }
       .mapNotNull { msg ->
         when (msg.role) {
           "user" -> Message.user(msg.content.text)
