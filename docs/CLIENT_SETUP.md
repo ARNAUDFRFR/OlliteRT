@@ -1,6 +1,6 @@
 # Client Setup
 
-OlliteRT implements the standard OpenAI API. Any tool or library that lets you set a custom base URL will work out of the box — no plugins, no adapters, no cloud required.
+OlliteRT implements the OpenAI Chat Completions / Responses / Audio APIs **and** the Anthropic Messages API. Any tool or library that lets you set a custom base URL will work out of the box — no plugins, no adapters, no cloud required.
 
 ## Table of Contents
 
@@ -10,6 +10,8 @@ OlliteRT implements the standard OpenAI API. Any tool or library that lets you s
   - [Voice Transcription (STT)](#voice-transcription-stt)
 - [Open WebUI](#open-webui)
 - [OpenClaw](#openclaw)
+- [Claude Code](#claude-code)
+- [Anthropic SDKs](#anthropic-sdks)
 - [Python (OpenAI SDK)](#python-openai-sdk)
 - [curl](#curl)
 
@@ -223,6 +225,73 @@ See the [Open WebUI docs on Native mode](https://docs.openwebui.com/features/ext
 ```
 
 OpenClaw has built-in provider plugins for Ollama, vLLM, LM Studio, and others. Any server exposing `/v1/chat/completions` works via the custom provider config above.
+
+## Claude Code
+
+[Claude Code](https://docs.claude.com/en/docs/claude-code/overview) targets the Anthropic Messages API. OlliteRT exposes that API on `/v1/messages`, so Claude Code can drive your phone with no proxy.
+
+> [!WARNING]
+> **Experimental — not recommended for daily coding work.** Claude Code ships with a multi-thousand-token system prompt and a large set of tool definitions (Bash, Edit, Read, Write, Grep, Glob, Task, etc.) that it sends on every request. On-device models in the Gemma-4-E2B / 3n class do not have the context budget or instruction-following headroom to drive that workload reliably — expect long prefill, frequent tool-call mistakes, and the LiteRT-LM #2418 parse failures noted below. Coding harnesses with a small system prompt and a narrower tool surface (for example [Pi Agent](https://pi.dev/)) running against the OpenAI-compatible `/v1/chat/completions` endpoint are a much better fit for this hardware. Treat Claude Code support here as a smoke-test for the Anthropic API, not a production workflow.
+
+**Setup** — set two environment variables before launching Claude Code:
+
+```bash
+ANTHROPIC_BASE_URL=http://PHONE_IP:8000 \
+ANTHROPIC_AUTH_TOKEN=your-token \
+claude
+```
+
+`ANTHROPIC_AUTH_TOKEN` is mapped to the `x-api-key` header. The `/v1` segment is appended automatically — set the base URL to the host root, not to `…/v1`. By default OlliteRT does not require auth, so the value is ignored — pass any non-empty string (Claude Code requires the variable to be set). If you've turned on **Require Bearer Token** under Settings → Server Configuration, the value must exactly match the token configured there. The phone never relays the token to the real Anthropic API.
+
+**Pick the right model** in OlliteRT first — Claude Code sends a long system prompt and many tools (Bash, Edit, Read, etc.), so a Gemma-4-E2B-it or larger is the practical floor.
+
+> [!WARNING]
+> **Tool calls can fail with HTTP 500 on Gemma 4.** When the model emits a tool call whose argument is a string with quoted content (most Bash / Edit calls), LiteRT-LM 0.11.0 / 0.12.0's native function-call parser raises `INVALID_ARGUMENT` and the request errors out. Tracking upstream: <https://github.com/google-ai-edge/LiteRT-LM/issues/2418>. Workaround: turn off **Settings → Schema Injection** in OlliteRT so tool calls flow through the text-mode parser instead.
+
+> [!TIP]
+> If a request appears to hang for 30–60 s before producing output, that is on-device prefill — not a network issue. OlliteRT emits Anthropic `ping` events every 10 s during prefill so Claude Code's SSE timeout doesn't trigger; you can confirm the stream is alive in **Settings → Logs**.
+
+## Anthropic SDKs
+
+The official [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python) and [TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) both accept a `base_url` override and work without modification.
+
+**Python:**
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://PHONE_IP:8000",
+    api_key="your-token",  # ignored when auth is disabled; must match the configured token when auth is enabled in Settings
+)
+
+resp = client.messages.create(
+    model="Gemma-4-E2B-it",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Say hello"}],
+)
+print(resp.content[0].text)
+```
+
+**TypeScript:**
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "http://PHONE_IP:8000",
+  apiKey: "your-token", // ignored when auth is disabled; must match the configured token when auth is enabled in Settings
+});
+
+const msg = await client.messages.create({
+  model: "Gemma-4-E2B-it",
+  max_tokens: 256,
+  messages: [{ role: "user", content: "Say hello" }],
+});
+console.log(msg.content[0].type === "text" ? msg.content[0].text : "");
+```
+
+Streaming works via `client.messages.stream(...)` (Python) and `client.messages.stream({...})` (TypeScript) without further configuration.
 
 ## Python (OpenAI SDK)
 
