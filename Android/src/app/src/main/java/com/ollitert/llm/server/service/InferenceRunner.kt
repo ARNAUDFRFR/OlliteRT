@@ -153,6 +153,10 @@ class InferenceRunner(
     // carries an explicit system prompt (Anthropic /v1/messages `system` field) and we
     // do not want both layered.
     suppressPerModelSystem: Boolean = false,
+    // Per-request thinking override. null = use the model's persisted setting; true/false
+    // forces thinking on/off for this request only. Forced-on requests on a model that
+    // does NOT support thinking are silently downgraded to off (the capability gate wins).
+    enableThinkingOverride: Boolean? = null,
   ): Pair<String?, String?> {
     // Track input tokens (rough estimate: ~4 chars per token)
     ServerMetrics.addTokensIn(estimateTokensLong(prompt))
@@ -174,7 +178,11 @@ class InferenceRunner(
       }
     }
 
-    val enableThinking = model.isThinkingEnabled
+    val enableThinking = if (model.llmSupportThinking) {
+      enableThinkingOverride ?: model.isThinkingEnabled
+    } else {
+      false
+    }
     val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
     // Captured inside the resetConversation lambda (which runs under inferenceLock) so
@@ -1233,10 +1241,11 @@ class InferenceRunner(
     schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
     suppressPerModelSystem: Boolean = false,
+    enableThinkingOverride: Boolean? = null,
   ): HttpResponse {
     val now = BridgeUtils.epochSeconds()
     val format = ChatCompletionsFormat(model.name, now, stopSequences, tools, json, includeUsage, hasSchemaInjection = schemaInjectionProviders.isNotEmpty())
-    return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips, logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages, suppressPerModelSystem)
+    return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips, logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages, suppressPerModelSystem, enableThinkingOverride)
   }
 
   // ── Streaming inference: /v1/completions ───────────────────────────────
@@ -1277,6 +1286,7 @@ class InferenceRunner(
     schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
     suppressPerModelSystem: Boolean = false,
+    enableThinkingOverride: Boolean? = null,
     requestModelId: String,
   ): HttpResponse {
     val format = AnthropicMessagesFormat(
@@ -1289,7 +1299,7 @@ class InferenceRunner(
     return streamInference(
       model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips,
       logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages,
-      suppressPerModelSystem,
+      suppressPerModelSystem, enableThinkingOverride,
     )
   }
 
@@ -1310,6 +1320,7 @@ class InferenceRunner(
     schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
     suppressPerModelSystem: Boolean = false,
+    enableThinkingOverride: Boolean? = null,
   ): HttpResponse {
     val streamStartMs = SystemClock.elapsedRealtime()
     ServerMetrics.addTokensIn(estimateTokensLong(prompt))
@@ -1333,7 +1344,11 @@ class InferenceRunner(
       }
     }
 
-    val enableThinking = model.isThinkingEnabled
+    val enableThinking = if (model.llmSupportThinking) {
+      enableThinkingOverride ?: model.isThinkingEnabled
+    } else {
+      false
+    }
     val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
     // Read prefs eagerly (before the Ktor coroutine runs) — SharedPreferences reads

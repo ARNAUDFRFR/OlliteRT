@@ -93,6 +93,7 @@ class AnthropicEndpointHandlers(
       bodyLength = body.length,
       endpoint = "/v1/messages",
       useAnthropicStream = anthropicReq.stream == true,
+      enableThinkingOverride = resolveThinkingOverride(anthropicReq.thinking),
     )
 
     return when (response) {
@@ -107,6 +108,18 @@ class AnthropicEndpointHandlers(
       // dispatched to streamMessagesLlm when useAnthropicStream was true.
       else -> response
     }
+  }
+
+  /**
+   * Map the Anthropic `thinking` config to the per-request override threaded into
+   * the inference runner. `{type:"enabled"}` forces thinking on, `{type:"disabled"}`
+   * forces it off, missing or any other type leaves the model's persisted setting
+   * in charge.
+   */
+  private fun resolveThinkingOverride(config: AnthropicThinkingConfig?): Boolean? = when (config?.type) {
+    "enabled" -> true
+    "disabled" -> false
+    else -> null
   }
 
   /**
