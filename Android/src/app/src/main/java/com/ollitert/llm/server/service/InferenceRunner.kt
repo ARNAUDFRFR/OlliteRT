@@ -157,6 +157,9 @@ class InferenceRunner(
     // forces thinking on/off for this request only. Forced-on requests on a model that
     // does NOT support thinking are silently downgraded to off (the capability gate wins).
     enableThinkingOverride: Boolean? = null,
+    // KV-cache reuse: when non-null, dispatch via Message.user(text) on the existing
+    // Conversation (skipping resetConversation) so the SDK only prefills the new turn.
+    incrementalUserText: String? = null,
   ): Pair<String?, String?> {
     // Track input tokens (rough estimate: ~4 chars per token)
     ServerMetrics.addTokensIn(estimateTokensLong(prompt))
@@ -207,14 +210,18 @@ class InferenceRunner(
           originalConfig = model.configValues
           model.configValues = configSnapshot
         }
-        ServerLlmModelHelper.resetConversation(
-          model,
-          supportImage = supportImage,
-          supportAudio = supportAudio,
-          systemInstruction = if (suppressPerModelSystem) null else buildSystemInstruction(model.prefsKey),
-          tools = schemaInjectionProviders,
-          initialMessages = schemaInjectionMessages,
-        )
+        if (incrementalUserText != null) {
+          Log.i(TAG, "INCREMENTAL_REUSE_BLOCKING requestId=$requestId model=${model.name} userTextLen=${incrementalUserText.length}")
+        } else {
+          ServerLlmModelHelper.resetConversation(
+            model,
+            supportImage = supportImage,
+            supportAudio = supportAudio,
+            systemInstruction = if (suppressPerModelSystem) null else buildSystemInstruction(model.prefsKey),
+            tools = schemaInjectionProviders,
+            initialMessages = schemaInjectionMessages,
+          )
+        }
       },
       runInference = { input, onPartial, onError ->
         ServerLlmModelHelper.runInference(
@@ -226,6 +233,7 @@ class InferenceRunner(
           images = images,
           audioClips = audioClips,
           extraContext = extraContext,
+          incrementalUserText = incrementalUserText,
           onNativeToolCalls = if (schemaInjectionProviders.isNotEmpty()) { calls ->
             capturedNativeToolCalls.set(calls)
           } else null,
@@ -1292,10 +1300,11 @@ class InferenceRunner(
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
     suppressPerModelSystem: Boolean = false,
     enableThinkingOverride: Boolean? = null,
+    incrementalUserText: String? = null,
   ): HttpResponse {
     val now = BridgeUtils.epochSeconds()
     val format = ChatCompletionsFormat(model.name, now, stopSequences, tools, json, includeUsage, hasSchemaInjection = schemaInjectionProviders.isNotEmpty())
-    return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips, logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages, suppressPerModelSystem, enableThinkingOverride)
+    return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips, logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages, suppressPerModelSystem, enableThinkingOverride, incrementalUserText)
   }
 
   // ── Streaming inference: /v1/completions ───────────────────────────────
@@ -1338,6 +1347,7 @@ class InferenceRunner(
     suppressPerModelSystem: Boolean = false,
     enableThinkingOverride: Boolean? = null,
     requestModelId: String,
+    incrementalUserText: String? = null,
   ): HttpResponse {
     val format = AnthropicMessagesFormat(
       modelName = model.name,
@@ -1350,7 +1360,7 @@ class InferenceRunner(
     return streamInference(
       model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips,
       logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages,
-      suppressPerModelSystem, enableThinkingOverride,
+      suppressPerModelSystem, enableThinkingOverride, incrementalUserText,
     )
   }
 
@@ -1372,6 +1382,10 @@ class InferenceRunner(
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
     suppressPerModelSystem: Boolean = false,
     enableThinkingOverride: Boolean? = null,
+    // KV-cache reuse: when non-null, send only this user text via Message.user(...)
+    // on the existing Conversation instead of resetting + sending the full rendered
+    // [prompt]. Caller (EndpointHandlers) decides eligibility via decideIncrementalReuse.
+    incrementalUserText: String? = null,
   ): HttpResponse {
     val streamStartMs = SystemClock.elapsedRealtime()
     ServerMetrics.addTokensIn(estimateTokensLong(prompt))
@@ -1435,14 +1449,21 @@ class InferenceRunner(
             originalConfig = model.configValues
             model.configValues = configSnapshot
           }
-          ServerLlmModelHelper.resetConversation(
-            model,
-            supportImage = supportImage,
-            supportAudio = supportAudio,
-            systemInstruction = if (suppressPerModelSystem) null else buildSystemInstruction(model.prefsKey),
-            tools = schemaInjectionProviders,
-            initialMessages = schemaInjectionMessages,
-          )
+          if (incrementalUserText != null) {
+            // Reuse the live Conversation: SDK has the prior history in its internal
+            // diff state, and runInference will dispatch via Message.user(text) so
+            // only the new turn is prefilled.
+            Log.i(TAG, "INCREMENTAL_REUSE requestId=$requestId model=${model.name} userTextLen=${incrementalUserText.length}")
+          } else {
+            ServerLlmModelHelper.resetConversation(
+              model,
+              supportImage = supportImage,
+              supportAudio = supportAudio,
+              systemInstruction = if (suppressPerModelSystem) null else buildSystemInstruction(model.prefsKey),
+              tools = schemaInjectionProviders,
+              initialMessages = schemaInjectionMessages,
+            )
+          }
         },
         runInference = { input, onPartial, onError ->
           ServerLlmModelHelper.runInference(
@@ -1454,6 +1475,7 @@ class InferenceRunner(
             images = images,
             audioClips = audioClips,
             extraContext = extraContext,
+            incrementalUserText = incrementalUserText,
             onNativeToolCalls = if (schemaInjectionProviders.isNotEmpty()) { calls ->
               capturedNativeToolCalls.set(calls)
             } else null,

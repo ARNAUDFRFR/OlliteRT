@@ -134,6 +134,41 @@ object GpuAvailability {
 object ServerLlmModelHelper {
   private val cleanUpListeners: MutableMap<String, CleanUpListener> = java.util.concurrent.ConcurrentHashMap()
 
+  /**
+   * Tracks the conversation state already prefilled into LiteRT's stateful Conversation
+   * so a subsequent request that extends the same history can reuse the prefilled KV
+   * cache instead of re-prefilling from scratch.
+   *
+   * LiteRT-LM's Conversation API renders the chat template twice (once with the prior
+   * history, once including the new message), diffs the two strings, and only feeds
+   * the new portion to the Session — but only when the Conversation is reused across
+   * sendMessage calls. Tearing the Conversation down between requests (our previous
+   * default behavior) discards the diff state and forces full prefill every turn.
+   *
+   * Usage: when a client sends [system?, user1, assistant1, ..., userN], compare
+   * messages[0..N-1] to the cached `lastTurns`. If matches, send only userN via
+   * [runInferenceIncremental]; the SDK extends the cached state. On divergence
+   * (different conversation, edited history, system prompt change, tool change),
+   * reset the Conversation and rebuild the cache from this request.
+   *
+   * State is keyed by model name because there is one Conversation per loaded model.
+   */
+  internal data class ConversationTurn(val role: String, val text: String)
+  internal data class ConversationCacheEntry(
+    val turns: List<ConversationTurn>,
+    val systemPromptHash: Int,
+    val toolsHash: Int,
+  )
+  private val conversationCache = java.util.concurrent.ConcurrentHashMap<String, ConversationCacheEntry>()
+
+  internal fun getCachedTurns(modelName: String): ConversationCacheEntry? = conversationCache[modelName]
+  internal fun updateCachedTurns(modelName: String, entry: ConversationCacheEntry) {
+    conversationCache[modelName] = entry
+  }
+  internal fun invalidateCachedTurns(modelName: String) {
+    conversationCache.remove(modelName)
+  }
+
   @OptIn(ExperimentalApi::class)
   fun initialize(
     context: Context,
@@ -461,6 +496,11 @@ object ServerLlmModelHelper {
     try {
       Log.d(TAG, "Resetting conversation for model '${model.name}'")
 
+      // Tearing the Conversation down discards the SDK's incremental prompt-diff
+      // state — the next request must rebuild from scratch, so no incremental
+      // reuse is possible until a new conversation is established.
+      invalidateCachedTurns(model.name)
+
       val instance = model.instance as? LlmModelInstance ?: return
 
       // Close old conversation in an inner try-catch — if it fails (e.g. already destroyed
@@ -533,6 +573,7 @@ object ServerLlmModelHelper {
 
   /** Safe cleanup: close native resources with try-catch, null instance, hint GC. */
   fun safeCleanup(model: Model) {
+    invalidateCachedTurns(model.name)
     try {
       cleanUp(model) {}
     } catch (e: Exception) {
@@ -589,6 +630,12 @@ object ServerLlmModelHelper {
     coroutineScope: CoroutineScope? = null,
     extraContext: Map<String, String>? = null,
     onNativeToolCalls: ((List<com.google.ai.edge.litertlm.ToolCall>) -> Unit)? = null,
+    // When non-null, bypass [input] entirely and dispatch via Message.user(incrementalUserText)
+    // on the existing Conversation. The SDK will diff the new turn against its stored history
+    // and only prefill the delta. Caller must guarantee the Conversation already holds the
+    // prior history (see ServerLlmModelHelper.getCachedTurns / updateCachedTurns in
+    // EndpointHandlers.decideIncrementalReuse).
+    incrementalUserText: String? = null,
   ) {
     val instance = model.instance as? LlmModelInstance
     if (instance == null) {
@@ -599,6 +646,39 @@ object ServerLlmModelHelper {
     cleanUpListeners.putIfAbsent(model.name, cleanUpListener)
 
     val conversation = instance.conversation
+
+    // Incremental path: send just the new user turn as a Message.user. Native side
+    // appends, renders, diffs, and only prefills the new portion.
+    if (incrementalUserText != null) {
+      conversation.sendMessageAsync(
+        Message.user(incrementalUserText),
+        object : MessageCallback {
+          override fun onMessage(message: Message) {
+            if (onNativeToolCalls != null && message.toolCalls.isNotEmpty()) {
+              onNativeToolCalls.invoke(message.toolCalls)
+            }
+            resultListener(message.toString(), false, message.channels["thought"])
+          }
+          override fun onDone() { resultListener("", true, null) }
+          override fun onError(throwable: Throwable) {
+            // Conversation state is undefined after an error — drop the cache so
+            // the next request rebuilds from scratch instead of trying to extend
+            // a possibly-corrupt SDK session.
+            invalidateCachedTurns(model.name)
+            if (throwable is CancellationException) {
+              Log.i(TAG, "The inference is cancelled (incremental).")
+              resultListener("", true, null)
+            } else {
+              Log.e(TAG, "Incremental inference onError for '${model.name}': " +
+                "[${throwable::class.simpleName}] ${throwable.message}", throwable)
+              onError("Error: ${throwable.message}")
+            }
+          }
+        },
+        extraContext ?: emptyMap(),
+      )
+      return
+    }
 
     val contents = mutableListOf<Content>()
     if (images.isNotEmpty() && input.contains(PromptBuilder.IMAGE_PLACEHOLDER)) {
