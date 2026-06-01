@@ -77,7 +77,7 @@ object TranscriptionFormatter {
         '\r' -> append("\\r")
         '\t' -> append("\\t")
         '\b' -> append("\\b")
-        '' -> append("\\f")
+        '\u000C' -> append("\\f")
         else -> {
           if (ch.code < 0x20) {
             append("\\u")
