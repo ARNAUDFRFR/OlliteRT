@@ -272,9 +272,10 @@ object ResponseRenderer {
       )
     }
 
+    var seqNum = 0
     for ((index, fc) in fcDataList.withIndex()) {
       append(emitSseEvent("response.output_item.added",
-        """{"type":"response.output_item.added","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"","status":"in_progress"},"output_index":$index}"""))
+        """{"type":"response.output_item.added","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"","status":"in_progress"},"sequence_number":${seqNum++}}"""))
 
       append(emitSseEvent("response.function_call_arguments.delta",
         """{"type":"response.function_call_arguments.delta","output_index":$index,"item_id":"${fc.fcId}","delta":"${fc.escapedArgs}"}"""))
@@ -283,7 +284,7 @@ object ResponseRenderer {
         """{"type":"response.function_call_arguments.done","output_index":$index,"item_id":"${fc.fcId}","arguments":"${fc.escapedArgs}"}"""))
 
       append(emitSseEvent("response.output_item.done",
-        """{"type":"response.output_item.done","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"${fc.escapedArgs}","status":"completed"},"output_index":$index}"""))
+        """{"type":"response.output_item.done","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"${fc.escapedArgs}","status":"completed"}}"""))
     }
 
     val outputItemsJson = fcDataList.withIndex().joinToString(",") { (index, fc) ->
@@ -313,7 +314,7 @@ object ResponseRenderer {
 
         // Chunk: role (first call only) + tool_calls entry with name and empty arguments
         val roleField = if (index == 0) """"role":"assistant","content":null,""" else ""
-        append("""data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[{"index":0,"delta":{${roleField}"tool_calls":[{"index":$index,"id":"$callId","type":"function","function":{"name":"$escapedName","arguments":""}}]},\"logprobs\":null,\"finish_reason\":null}]}""")
+        append("""data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[{"index":0,"delta":{${roleField}"tool_calls":[{"index":$index,"id":"$callId","type":"function","function":{"name":"$escapedName","arguments":""}}]},"logprobs":null,"finish_reason":null}]}""")
         append("\n\n")
         
         // Chunk: arguments delta for this tool call
