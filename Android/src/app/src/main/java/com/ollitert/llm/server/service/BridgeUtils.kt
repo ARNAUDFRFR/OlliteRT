@@ -18,7 +18,6 @@ package com.ollitert.llm.server.service
 
 import com.ollitert.llm.server.common.humanReadableSize
 import com.ollitert.llm.server.data.BASE64_COMPACT_THRESHOLD_CHARS
-import java.util.UUID
 
 object BridgeUtils {
   private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]")
@@ -39,20 +38,6 @@ object BridgeUtils {
     return java.security.MessageDigest.isEqual(expected, actual)
   }
 
-  /**
-   * Verify the value of an `x-api-key` header against the configured token.
-   *
-   * Distinct from [isBearerAuthorized] because Anthropic clients (Claude Code,
-   * the official SDKs) send the raw token in `x-api-key` with no `Bearer` prefix.
-   * Mixing in a `Bearer` literal here would silently break every Anthropic request.
-   */
-  fun isApiKeyAuthorized(expectedToken: String, apiKeyHeader: String?): Boolean {
-    if (expectedToken.isBlank()) return true
-    val expected = expectedToken.toByteArray(Charsets.UTF_8)
-    val actual = (apiKeyHeader ?: "").toByteArray(Charsets.UTF_8)
-    return java.security.MessageDigest.isEqual(expected, actual)
-  }
-
   fun escapeSseText(value: String): String = buildString(value.length) {
     for (ch in value) {
       when (ch) {
@@ -62,7 +47,7 @@ object BridgeUtils {
         '\r' -> append("\\r")
         '\t' -> append("\\t")
         '\b' -> append("\\b")
-        '' -> append("\\f")
+        '\u000C' -> append("\\f")
         else -> if (ch.code in 0x00..0x1F) {
           append("\\u")
           append(ch.code.toString(16).padStart(4, '0'))
@@ -75,38 +60,14 @@ object BridgeUtils {
 
   // ── ID generation ──────────────────────────────────────────────────────
   // OpenAI-compatible IDs use specific prefixes per object type.
-  // Optimized to avoid excessive string allocations and conversions.
 
-  fun generateCompletionId(): String = "cmpl-${UUID.randomUUID()}"
-  fun generateChatCompletionId(): String = "chatcmpl-${UUID.randomUUID()}"
-  fun generateResponseId(): String = "resp-${UUID.randomUUID()}"
-  fun generateMessageId(): String = "msg-${UUID.randomUUID()}"
-  
-  fun generateToolCallId(): String {
-    val uuid = UUID.randomUUID().toString()
-    return buildString(capacity = 28) {
-      append("call_")
-      var count = 0
-      for (ch in uuid) {
-        if (ch != '-' && count < 24) {
-          append(ch)
-          count++
-        }
-      }
-    }
-  }
-  
-  fun generateFunctionCallId(): String = "fc-${UUID.randomUUID()}"
-  
-  fun generateBearerToken(): String {
-    val uuid = UUID.randomUUID().toString()
-    return buildString(capacity = 32) {
-      for (ch in uuid) {
-        if (ch != '-') append(ch)
-      }
-    }
-  }
-  
+  fun generateCompletionId(): String = "cmpl-${java.util.UUID.randomUUID()}"
+  fun generateChatCompletionId(): String = "chatcmpl-${java.util.UUID.randomUUID()}"
+  fun generateResponseId(): String = "resp-${java.util.UUID.randomUUID()}"
+  fun generateMessageId(): String = "msg-${java.util.UUID.randomUUID()}"
+  fun generateToolCallId(): String = "call_${java.util.UUID.randomUUID().toString().replace("-", "").take(24)}"
+  fun generateFunctionCallId(): String = "fc-${java.util.UUID.randomUUID()}"
+  fun generateBearerToken(): String = java.util.UUID.randomUUID().toString().replace("-", "")
   fun epochSeconds(): Long = System.currentTimeMillis() / 1000
 
   // ── Compact Image Data ──────────────────────────────────────────────────
@@ -118,8 +79,6 @@ object BridgeUtils {
    *
    * Uses manual string scanning instead of regex because Android's java.util.regex engine
    * stack-overflows on quantifiers matching 100K+ characters (typical for image payloads).
-   *
-   * Optimized to avoid substring allocations where possible.
    *
    * Example:
    * ```
@@ -149,25 +108,10 @@ object BridgeUtils {
         continue
       }
 
-      // Check MIME type validity without creating substring
-      val mimeStart = dataIdx + 5
-      val mimeEnd = markerIdx
-      if (mimeEnd - mimeStart > 50) {
-        // MIME type too long, likely invalid
-        sb.append(body, cursor, markerIdx + MARKER.length)
-        cursor = markerIdx + MARKER.length
-        continue
-      }
-      
-      // Check for quotes in MIME type without substring allocation
-      var hasQuote = false
-      for (i in mimeStart until mimeEnd) {
-        if (body[i] == '"') {
-          hasQuote = true
-          break
-        }
-      }
-      if (hasQuote) {
+      // Extract MIME type between "data:" and ";base64,"
+      val mimeType = body.substring(dataIdx + 5, markerIdx)
+      if (mimeType.contains('"') || mimeType.length > 50) {
+        // Invalid MIME (crossed a JSON boundary) — skip
         sb.append(body, cursor, markerIdx + MARKER.length)
         cursor = markerIdx + MARKER.length
         continue
@@ -193,16 +137,10 @@ object BridgeUtils {
         continue
       }
 
-      // Count base64 chars without substring allocation
-      var base64Chars = 0
-      for (i in payloadStart until payloadEnd) {
-        if (body[i] != '=' && body[i] != '\\') base64Chars++
-      }
+      // Replace with placeholder
+      val base64Chars = body.substring(payloadStart, payloadEnd).count { it != '=' && it != '\\' }
       val decodedBytes = (base64Chars * 3L) / 4L
       val sizeLabel = decodedBytes.humanReadableSize()
-      
-      // Extract MIME type and clean it (this substring is small)
-      val mimeType = body.substring(mimeStart, mimeEnd)
       val cleanMime = mimeType.replace("\\/", "/")
       val category = cleanMime.substringBefore('/')
 
