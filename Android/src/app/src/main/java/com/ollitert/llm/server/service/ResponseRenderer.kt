@@ -247,6 +247,8 @@ object ResponseRenderer {
    * function_call_arguments.done → output_item.done.
    * Then a response.completed event wrapping all tool calls.
    */
+  private data class FcData(val fcId: String, val callId: String, val escapedName: String, val escapedArgs: String)
+
   fun buildResponsesStreamToolCallEvents(
     respId: String,
     modelId: String,
@@ -260,7 +262,7 @@ object ResponseRenderer {
     append(emitSseEvent("response.created", """{"type":"response.created","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
     append(emitSseEvent("response.in_progress", """{"type":"response.in_progress","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
 
-    data class FcData(val fcId: String, val callId: String, val escapedName: String, val escapedArgs: String)
+
     val fcDataList = toolCalls.map { tc ->
       FcData(
         fcId = BridgeUtils.generateFunctionCallId(),
