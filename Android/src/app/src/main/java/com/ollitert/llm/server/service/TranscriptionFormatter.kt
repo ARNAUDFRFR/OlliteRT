@@ -23,6 +23,8 @@ import java.util.Locale
  *
  * LiteRT returns raw text without word-level timing, so verbose_json returns a
  * single segment. srt/vtt require word-level timing and are not supported.
+ * 
+ * Optimized to escape and build JSON in a single pass without intermediate allocations.
  */
 object TranscriptionFormatter {
 
@@ -31,29 +33,32 @@ object TranscriptionFormatter {
 
   fun toText(text: String): String = text
 
-  fun toJson(text: String): String =
-    """{"text":${escapeJsonString(text)}}"""
+  fun toJson(text: String): String {
+    return buildString(text.length + 20) {
+      append("{\"text\":")
+      appendEscapedJsonString(text)
+      append("}")
+    }
+  }
 
   fun toVerboseJson(
     text: String,
     language: String?,
     durationSeconds: Double,
   ): String {
-    val escapedText = escapeJsonString(text)
-    val lang = escapeJsonString(language ?: "")
     val dur = formatDouble(durationSeconds)
-    return buildString {
-      append("""{"task":"transcribe","language":""")
-      append(lang)
-      append(""","duration":""")
+    return buildString(text.length * 2 + 200) {
+      append("{\"task\":\"transcribe\",\"language\":")
+      appendEscapedJsonString(language ?: "")
+      append(",\"duration\":")
       append(dur)
-      append(""","text":""")
-      append(escapedText)
-      append(""","segments":[{"id":0,"seek":0,"start":0.0,"end":""")
+      append(",\"text\":")
+      appendEscapedJsonString(text)
+      append(",\"segments\":[{\"id\":0,\"seek\":0,\"start\":0.0,\"end\":")
       append(dur)
-      append(""","text":""")
-      append(escapedText)
-      append(""","tokens":[],"temperature":0.0,"avg_logprob":0.0,"compression_ratio":0.0,"no_speech_prob":0.0}]}""")
+      append(",\"text\":")
+      appendEscapedJsonString(text)
+      append(",\"tokens\":[],\"temperature\":0.0,\"avg_logprob\":0.0,\"compression_ratio\":0.0,\"no_speech_prob\":0.0}]}")
     }
   }
 
@@ -62,29 +67,27 @@ object TranscriptionFormatter {
     return formatted.trimEnd('0').let { if (it.endsWith('.')) "${it}0" else it }
   }
 
-  private fun escapeJsonString(value: String): String {
-    val sb = StringBuilder(value.length + 2)
-    sb.append('"')
+  private fun StringBuilder.appendEscapedJsonString(value: String) {
+    append('"')
     for (ch in value) {
       when (ch) {
-        '"' -> sb.append("\\\"")
-        '\\' -> sb.append("\\\\")
-        '\n' -> sb.append("\\n")
-        '\r' -> sb.append("\\r")
-        '\t' -> sb.append("\\t")
-        '\b' -> sb.append("\\b")
-        '' -> sb.append("\\f")
+        '"' -> append("\\\"")
+        '\\' -> append("\\\\")
+        '\n' -> append("\\n")
+        '\r' -> append("\\r")
+        '\t' -> append("\\t")
+        '\b' -> append("\\b")
+        '' -> append("\\f")
         else -> {
           if (ch.code < 0x20) {
-            sb.append("\\u")
-            sb.append(String.format(Locale.US, "%04x", ch.code))
+            append("\\u")
+            append(String.format(Locale.US, "%04x", ch.code))
           } else {
-            sb.append(ch)
+            append(ch)
           }
         }
       }
     }
-    sb.append('"')
-    return sb.toString()
+    append('"')
   }
 }
