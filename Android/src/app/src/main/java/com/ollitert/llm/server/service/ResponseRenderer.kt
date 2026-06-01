@@ -69,16 +69,44 @@ object ResponseRenderer {
     val esc = BridgeUtils.escapeSseText(text)
     val totalTokens = inputTokens + outputTokens
 
-    return buildString {
-      append(emitSseEvent("response.created", """{"type":"response.created","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
-      append(emitSseEvent("response.in_progress", """{"type":"response.in_progress","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
-      append(emitSseEvent("response.output_item.added", """{"type":"response.output_item.added","item":{"id":"$msgId","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0,"sequence_number":0}"""))
-      append(emitSseEvent("response.content_part.added", """{"type":"response.content_part.added","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}"""))
-      append(emitSseEvent("response.output_text.delta", """{"type":"response.output_text.delta","content_index":0,"delta":"$esc","item_id":"$msgId","output_index":0}"""))
-      append(emitSseEvent("response.output_text.done", """{"type":"response.output_text.done","content_index":0,"item_id":"$msgId","output_index":0,"text":"$esc"}"""))
-      append(emitSseEvent("response.content_part.done", """{"type":"response.content_part.done","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"$esc"}}"""))
-      append(emitSseEvent("response.output_item.done", """{"type":"response.output_item.done","item":{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"$esc"}],"role":"assistant"},"output_index":0}"""))
-      append(emitSseEvent("response.completed", """{"type":"response.completed","response":{"id":"$respId","object":"response","created_at":$now,"status":"completed","model":"$modelId","output":[{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"$esc"}],"role":"assistant"}],"usage":{"input_tokens":$inputTokens,"output_tokens":$outputTokens,"total_tokens":$totalTokens}}}"""))
+    return buildString(capacity = 2048) {
+      // Inline SSE events to avoid intermediate string allocations
+      append("event: response.created\n")
+      append("""data: {"type":"response.created","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}""")
+      append("\n\n")
+      
+      append("event: response.in_progress\n")
+      append("""data: {"type":"response.in_progress","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}""")
+      append("\n\n")
+      
+      append("event: response.output_item.added\n")
+      append("""data: {"type":"response.output_item.added","item":{"id":"$msgId","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0}""")
+      append("\n\n")
+      
+      append("event: response.content_part.added\n")
+      append("""data: {"type":"response.content_part.added","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[]}}""")
+      append("\n\n")
+      
+      append("event: response.output_text.delta\n")
+      append("""data: {"type":"response.output_text.delta","content_index":0,"delta":"$esc","item_id":"$msgId","output_index":0}""")
+      append("\n\n")
+      
+      append("event: response.output_text.done\n")
+      append("""data: {"type":"response.output_text.done","content_index":0,"item_id":"$msgId","output_index":0,"text":"$esc"}""")
+      append("\n\n")
+      
+      append("event: response.content_part.done\n")
+      append("""data: {"type":"response.content_part.done","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[],"text":"$esc"}}""")
+      append("\n\n")
+      
+      append("event: response.output_item.done\n")
+      append("""data: {"type":"response.output_item.done","item":{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","text":"$esc"}],"role":"assistant"},"output_index":0}""")
+      append("\n\n")
+      
+      append("event: response.completed\n")
+      append("""data: {"type":"response.completed","response":{"id":"$respId","object":"response","created_at":$now,"status":"completed","model":"$modelId","output":[{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","text":"$esc"}],"role":"assistant"}],"usage":{"input_tokens":$inputTokens,"output_tokens":$outputTokens,"total_tokens":$totalTokens}}}""")
+      append("\n\n")
+      
       append("data: [DONE]\n\n")
     }
   }
@@ -86,11 +114,22 @@ object ResponseRenderer {
   // ── Per-token streaming SSE builders ─────────────────────────────────────
 
   /** Emits the opening events before any delta tokens. */
-  fun buildStreamingHeader(modelId: String, respId: String, msgId: String, now: Long): String = buildString {
-    append(emitSseEvent("response.created", """{"type":"response.created","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
-    append(emitSseEvent("response.in_progress", """{"type":"response.in_progress","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
-    append(emitSseEvent("response.output_item.added", """{"type":"response.output_item.added","item":{"id":"$msgId","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0,"sequence_number":0}"""))
-    append(emitSseEvent("response.content_part.added", """{"type":"response.content_part.added","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}"""))
+  fun buildStreamingHeader(modelId: String, respId: String, msgId: String, now: Long): String = buildString(capacity = 1024) {
+    append("event: response.created\n")
+    append("""data: {"type":"response.created","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}""")
+    append("\n\n")
+    
+    append("event: response.in_progress\n")
+    append("""data: {"type":"response.in_progress","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}""")
+    append("\n\n")
+    
+    append("event: response.output_item.added\n")
+    append("""data: {"type":"response.output_item.added","item":{"id":"$msgId","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0}""")
+    append("\n\n")
+    
+    append("event: response.content_part.added\n")
+    append("""data: {"type":"response.content_part.added","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[]}}""")
+    append("\n\n")
   }
 
   /** Emits a single token delta event. [escapedDelta] must already be SSE-safe. */
@@ -98,12 +137,25 @@ object ResponseRenderer {
     emitSseEvent("response.output_text.delta", """{"type":"response.output_text.delta","content_index":0,"delta":"$escapedDelta","item_id":"$msgId","output_index":0}""")
 
   /** Emits the closing events after all delta tokens. [escapedFullText] must already be SSE-safe. */
-  fun buildStreamingFooter(modelId: String, respId: String, msgId: String, now: Long, escapedFullText: String, inputTokens: Int = 0, outputTokens: Int = 0): String = buildString {
+  fun buildStreamingFooter(modelId: String, respId: String, msgId: String, now: Long, escapedFullText: String, inputTokens: Int = 0, outputTokens: Int = 0): String = buildString(capacity = 1024) {
     val totalTokens = inputTokens + outputTokens
-    append(emitSseEvent("response.output_text.done", """{"type":"response.output_text.done","content_index":0,"item_id":"$msgId","output_index":0,"text":"$escapedFullText"}"""))
-    append(emitSseEvent("response.content_part.done", """{"type":"response.content_part.done","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"$escapedFullText"}}"""))
-    append(emitSseEvent("response.output_item.done", """{"type":"response.output_item.done","item":{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"$escapedFullText"}],"role":"assistant"},"output_index":0}"""))
-    append(emitSseEvent("response.completed", """{"type":"response.completed","response":{"id":"$respId","object":"response","created_at":$now,"status":"completed","model":"$modelId","output":[{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"$escapedFullText"}],"role":"assistant"}],"usage":{"input_tokens":$inputTokens,"output_tokens":$outputTokens,"total_tokens":$totalTokens}}}"""))
+    
+    append("event: response.output_text.done\n")
+    append("""data: {"type":"response.output_text.done","content_index":0,"item_id":"$msgId","output_index":0,"text":"$escapedFullText"}""")
+    append("\n\n")
+    
+    append("event: response.content_part.done\n")
+    append("""data: {"type":"response.content_part.done","content_index":0,"item_id":"$msgId","output_index":0,"part":{"type":"output_text","annotations":[],"text":"$escapedFullText"}}""")
+    append("\n\n")
+    
+    append("event: response.output_item.done\n")
+    append("""data: {"type":"response.output_item.done","item":{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","text":"$escapedFullText"}],"role":"assistant"},"output_index":0}""")
+    append("\n\n")
+    
+    append("event: response.completed\n")
+    append("""data: {"type":"response.completed","response":{"id":"$respId","object":"response","created_at":$now,"status":"completed","model":"$modelId","output":[{"id":"$msgId","type":"message","status":"completed","content":[{"type":"output_text","text":"$escapedFullText"}],"role":"assistant"}],"usage":{"input_tokens":$inputTokens,"output_tokens":$outputTokens,"total_tokens":$totalTokens}}}""")
+    append("\n\n")
+    
     append("data: [DONE]\n\n")
   }
 
@@ -135,7 +187,8 @@ object ResponseRenderer {
   ): String {
     val total = promptTokens + completionTokens
     val timingsSuffix = if (timingsJson != null) ""","timings":$timingsJson""" else ""
-    return """data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[],"usage":{"prompt_tokens":$promptTokens,"completion_tokens":$completionTokens,"total_tokens":$total}$timingsSuffix}""" + "\n\n"
+    return """data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[],"usage":{"prompt_tokens":$promptTokens,"completion_tokens":$completionTokens,"total_tokens":$total$timingsSuffix}}
+"""
   }
 
   // ── OpenAI Completions SSE builders (text_completion format) ────────────
@@ -153,7 +206,8 @@ object ResponseRenderer {
   ): String {
     val total = promptTokens + completionTokens
     val timingsSuffix = if (timingsJson != null) ""","timings":$timingsJson""" else ""
-    return """data: {"id":"$cmplId","object":"text_completion","created":$now,"model":"$modelId","choices":[],"usage":{"prompt_tokens":$promptTokens,"completion_tokens":$completionTokens,"total_tokens":$total}$timingsSuffix}""" + "\n\n"
+    return """data: {"id":"$cmplId","object":"text_completion","created":$now,"model":"$modelId","choices":[],"usage":{"prompt_tokens":$promptTokens,"completion_tokens":$completionTokens,"total_tokens":$total$timingsSuffix}}
+"""
   }
 
   private fun buildCompletionChunkJson(
@@ -200,7 +254,7 @@ object ResponseRenderer {
     toolCalls: List<ToolCall>,
     inputTokens: Int = 0,
     outputTokens: Int = 0,
-  ): String = buildString {
+  ): String = buildString(capacity = 2048) {
     val totalTokens = inputTokens + outputTokens
 
     append(emitSseEvent("response.created", """{"type":"response.created","response":{"id":"$respId","object":"response","created_at":$now,"status":"in_progress","model":"$modelId","output":[]}}"""))
@@ -216,10 +270,9 @@ object ResponseRenderer {
       )
     }
 
-    var seqNum = 0
     for ((index, fc) in fcDataList.withIndex()) {
       append(emitSseEvent("response.output_item.added",
-        """{"type":"response.output_item.added","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"","status":"in_progress"},"sequence_number":${seqNum++}}"""))
+        """{"type":"response.output_item.added","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"","status":"in_progress"},"output_index":$index}"""))
 
       append(emitSseEvent("response.function_call_arguments.delta",
         """{"type":"response.function_call_arguments.delta","output_index":$index,"item_id":"${fc.fcId}","delta":"${fc.escapedArgs}"}"""))
@@ -228,7 +281,7 @@ object ResponseRenderer {
         """{"type":"response.function_call_arguments.done","output_index":$index,"item_id":"${fc.fcId}","arguments":"${fc.escapedArgs}"}"""))
 
       append(emitSseEvent("response.output_item.done",
-        """{"type":"response.output_item.done","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"${fc.escapedArgs}","status":"completed"}}"""))
+        """{"type":"response.output_item.done","output_index":$index,"item":{"id":"${fc.fcId}","type":"function_call","call_id":"${fc.callId}","name":"${fc.escapedName}","arguments":"${fc.escapedArgs}","status":"completed"},"output_index":$index}"""))
     }
 
     val outputItemsJson = fcDataList.withIndex().joinToString(",") { (index, fc) ->
@@ -250,7 +303,7 @@ object ResponseRenderer {
    * Does NOT include [DONE] — caller should emit SSE_DONE separately.
    */
   fun buildChatStreamToolCallChunks(chatId: String, modelId: String, now: Long, toolCalls: List<ToolCall>): String {
-    return buildString {
+    return buildString(capacity = 1024) {
       for ((index, toolCall) in toolCalls.withIndex()) {
         val escapedName = BridgeUtils.escapeSseText(toolCall.function.name)
         val escapedArgs = BridgeUtils.escapeSseText(toolCall.function.arguments)
@@ -258,12 +311,14 @@ object ResponseRenderer {
 
         // Chunk: role (first call only) + tool_calls entry with name and empty arguments
         val roleField = if (index == 0) """"role":"assistant","content":null,""" else ""
-        append("""data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[{"index":0,"delta":{${roleField}"tool_calls":[{"index":$index,"id":"$callId","type":"function","function":{"name":"$escapedName","arguments":""}}]},"logprobs":null,"finish_reason":null}]}""")
+        append("""data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[{"index":0,"delta":{${roleField}"tool_calls":[{"index":$index,"id":"$callId","type":"function","function":{"name":"$escapedName","arguments":""}}]},\"logprobs\":null,\"finish_reason\":null}]}""")
         append("\n\n")
+        
         // Chunk: arguments delta for this tool call
         append("""data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[{"index":0,"delta":{"tool_calls":[{"index":$index,"function":{"arguments":"$escapedArgs"}}]},"logprobs":null,"finish_reason":null}]}""")
         append("\n\n")
       }
+      
       // Final chunk: finish_reason
       append("""data: {"id":"$chatId","object":"chat.completion.chunk","created":$now,"model":"$modelId","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"tool_calls"}]}""")
       append("\n\n")
