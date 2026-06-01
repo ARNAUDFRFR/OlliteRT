@@ -64,6 +64,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.Routing
 import io.ktor.server.routing.get
+import io.ktor.server.routing.head
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.Dispatchers
@@ -94,6 +95,7 @@ private const val TAG = "OlliteRT.Server"
 
 private val INFERENCE_PATHS = setOf(
   "/generate", "/v1/completions", "/v1/chat/completions", "/v1/responses", "/v1/audio/transcriptions",
+  "/v1/messages", "/v1/messages/count_tokens",
 )
 
 class KtorServer(
@@ -105,6 +107,7 @@ class KtorServer(
   private val nextRequestId: () -> String,
   private val emitDebugStackTrace: (Throwable, String, String?) -> Unit,
   private val audioTranscriptionHandler: AudioTranscriptionHandler,
+  private val anthropicEndpointHandlers: AnthropicEndpointHandlers,
   private val inferenceLock: Any,
 ) {
 
@@ -232,6 +235,9 @@ class KtorServer(
     if (expected.isBlank()) return true // Auth disabled
     val header = call.request.headers["Authorization"] ?: ""
     if (BridgeUtils.isBearerAuthorized(expected, header)) return true
+    // Anthropic SDKs and Claude Code authenticate via x-api-key with no Bearer prefix.
+    val apiKey = call.request.headers["x-api-key"] ?: ""
+    if (BridgeUtils.isApiKeyAuthorized(expected, apiKey)) return true
     call.respondHttpResponse(httpUnauthorized("unauthorized"))
     return false
   }
@@ -313,6 +319,17 @@ class KtorServer(
     get("/v1") { handleServerInfo(call) }
     get("/api/version") { handleServerInfo(call) }
 
+    // HEAD probes used by Anthropic/OpenAI clients (Claude Code, curl -I, monitors)
+    // to liveness-check the base URL before issuing real requests. RFC 7231 §4.3.2:
+    // HEAD must succeed wherever GET succeeds. Ktor does not auto-derive HEAD from
+    // GET, so register them explicitly. respond with 200 + Content-Type only — Ktor
+    // strips the body from a HEAD response.
+    head("/") { call.respondHttpResponse(httpOkJson("")) }
+    head("/v1") { call.respondHttpResponse(httpOkJson("")) }
+    head("/ping") { call.respondHttpResponse(httpOkJson("")) }
+    head("/health") { call.respondHttpResponse(httpOkJson("")) }
+    head("/v1/health") { call.respondHttpResponse(httpOkJson("")) }
+
     get("/metrics") {
       withGetLogging(call) {
         val body = PrometheusRenderer.render()
@@ -375,6 +392,32 @@ class KtorServer(
       if (!requireAuth(call)) return@post
       withRequestLogging(call) { body, captureBody, captureResponse, logId, _, prefs ->
         endpointHandlers.handleResponses(body, captureBody, captureResponse, logId, prefs)
+      }
+    }
+
+    post("/v1/messages") {
+      if (!requireAuth(call)) return@post
+      withRequestLogging(call) { body, captureBody, captureResponse, logId, _, prefs ->
+        if (prefs.verboseDebug) {
+          val headers = call.request.headers
+          val redacted = RequestLogStore.redactSensitiveHeaders(
+            headers.names().associateWith { headers[it].orEmpty() }
+          )
+          val ua = redacted["User-Agent"] ?: redacted["user-agent"] ?: ""
+          val av = redacted["anthropic-version"] ?: ""
+          val accept = redacted["Accept"] ?: redacted["accept"] ?: ""
+          val cl = redacted["Content-Length"] ?: redacted["content-length"] ?: ""
+          val hasApiKey = (redacted["x-api-key"] != null || redacted["X-Api-Key"] != null).toString()
+          Log.i(TAG, "ANTHROPIC_REQ headers: ua=\"$ua\" anthropic-version=\"$av\" accept=\"$accept\" content-length=$cl x-api-key=$hasApiKey body_chars=${body.length} body_head=\"${body.take(200).replace("\n", "\\n")}\"")
+        }
+        anthropicEndpointHandlers.handleMessages(body, captureBody, captureResponse, logId, prefs)
+      }
+    }
+
+    post("/v1/messages/count_tokens") {
+      if (!requireAuth(call)) return@post
+      withRequestLogging(call) { body, captureBody, captureResponse, logId, _, prefs ->
+        anthropicEndpointHandlers.handleCountTokens(body, captureBody, captureResponse, logId, prefs)
       }
     }
 

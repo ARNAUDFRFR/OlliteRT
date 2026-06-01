@@ -9,6 +9,8 @@ OlliteRT exposes an OpenAI-compatible HTTP API on your local network. Default po
 - [Chat Completions](#chat-completions--post-v1chatcompletions)
 - [Text Completions](#text-completions--post-v1completions)
 - [Responses API](#responses-api--post-v1responses)
+- [Anthropic Messages](#anthropic-messages--post-v1messages)
+- [Anthropic Token Counter](#anthropic-token-counter--post-v1messagescount_tokens)
 - [Audio Transcriptions](#audio-transcriptions--post-v1audiotranscriptions)
 - [Models](#models--get-v1models)
 - [Model Detail](#model-detail--get-v1modelsid)
@@ -26,6 +28,8 @@ OlliteRT exposes an OpenAI-compatible HTTP API on your local network. Default po
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions API (streaming + non-streaming) |
 | `POST` | `/v1/completions` | OpenAI Text Completions API |
 | `POST` | `/v1/responses` | OpenAI Responses API |
+| `POST` | `/v1/messages` | Anthropic Messages API (streaming + non-streaming) |
+| `POST` | `/v1/messages/count_tokens` | Anthropic input-token estimator |
 | `POST` | `/v1/audio/transcriptions` | Audio transcription |
 | `GET`  | `/v1/models` | List available models |
 | `GET`  | `/v1/models/{id}` | Get detail for a specific model |
@@ -44,7 +48,13 @@ To enable authentication, go to Settings → Server Configuration and toggle **R
 Authorization: Bearer your-token
 ```
 
-Some clients (Home Assistant integrations, Open WebUI) require an API key field even when auth is disabled — enter any non-empty value (e.g. `unused`). OlliteRT ignores the header entirely when bearer auth is not enabled.
+Anthropic SDK clients (Claude Code, the official Python/TypeScript SDKs) send credentials in `x-api-key` instead. OlliteRT accepts either header — `x-api-key` carries the raw token with no `Bearer` prefix:
+
+```
+x-api-key: your-token
+```
+
+In every example below the literal string `your-token` is purely a placeholder — when auth is disabled (the default) OlliteRT ignores the header value entirely, so any non-empty string works. When auth is enabled, the value must match the token configured in **Settings → Server Configuration**. The phone never relays credentials to the real OpenAI or Anthropic APIs.
 
 See the [Security Guide](../SECURITY.md) for details on network exposure and credential storage.
 
@@ -237,6 +247,118 @@ data: [DONE]
 ```
 
 The final `data: [DONE]` line has no `event:` prefix — it signals the end of the stream (same as Chat Completions).
+
+## Anthropic Messages — `POST /v1/messages`
+
+Anthropic-compatible Messages API. Lets Claude Code and the official Anthropic SDKs (Python, TypeScript) target the phone directly with no proxy. The handler translates the Anthropic request into the internal chat-completion pipeline and re-shapes the response into Anthropic's `content`-block format.
+
+> [!WARNING]
+> **Experimental.** Wire-level support for the Messages API is implemented and stable, but on-device models in the Gemma-4-E2B / 3n class do not have the context budget or instruction-following headroom to drive Claude Code (large system prompt, dense tool surface) reliably. Expect long prefill, frequent tool-call mistakes, and the LiteRT-LM #2418 parse failures noted below. Use the OpenAI-compatible endpoints for production workflows; treat this surface as a smoke test for the Anthropic API.
+
+### Request Body
+
+| Parameter | Type | Required | Description |
+|:----------|:-----|:--------:|:------------|
+| `model` | string | Yes | Model name (e.g. `Gemma-4-E2B-it`) |
+| `messages` | array | Yes | Array of message objects (`role` + `content`) |
+| `max_tokens` | integer | Yes | Maximum tokens to generate |
+| `system` | string or array | No | System prompt — string for the simple form, or an array of `{type:"text", text:"..."}` blocks |
+| `stream` | boolean | No | Enable SSE streaming (default: `false`) |
+| `temperature` | number | No | Sampling temperature |
+| `top_p` | number | No | Nucleus sampling threshold |
+| `top_k` | integer | No | Top-k sampling |
+| `stop_sequences` | array | No | Stop strings |
+| `tools` | array | No | Tool definitions in Anthropic shape (`{name, description, input_schema}`) |
+| `tool_choice` | object | No | `{type:"auto"}`, `{type:"any"}`, `{type:"none"}`, or `{type:"tool", name:"..."}` |
+| `thinking` | object | No | `{type:"enabled"}` / `{type:"disabled"}` — per-request override of the model's persisted thinking setting (only applied when the model supports thinking) |
+
+The following Anthropic features are accepted on the wire but silently dropped because LiteRT-LM has no equivalent: `metadata`, `service_tier`, `cache_control`, `parallel_tool_calls`, echoed `thinking` blocks. URL-sourced images, document blocks, and `computer_*` / `text_editor_*` / `bash_*` tool types return HTTP 400.
+
+### Response (non-streaming)
+
+```json
+{
+  "id": "msg_...",
+  "type": "message",
+  "role": "assistant",
+  "model": "Gemma-4-E2B-it",
+  "content": [
+    {"type": "text", "text": "Hello!"}
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 12, "output_tokens": 4}
+}
+```
+
+`stop_reason` is one of `end_turn`, `max_tokens`, `stop_sequence`, or `tool_use`. When `stop_sequence` fires, `stop_sequence` echoes the matched string. Tool calls produce `{type:"tool_use", id, name, input}` content blocks.
+
+### Streaming
+
+When `stream: true`, the response is a Server-Sent Events stream that follows Anthropic's documented event sequence:
+
+```
+event: message_start
+data: {"type":"message_start","message":{...}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{...}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+OlliteRT also emits `event: ping` events every 10 s while the model is still in prefill so SDK clients don't time out on long on-device prefill (Gemma-4-E2B routinely takes 30–60 s to first token). Errors mid-stream surface as `event: error` with `{"type":"error","error":{"type","message"}}`.
+
+### Known Issues
+
+> [!WARNING]
+> **Gemma 4 native tool calling is unreliable.** When a tool argument is a string containing quoted content (Bash command, Edit `old_string`, WebFetch URL, JSON-in-a-string), Gemma-4 emits its trained `<|"|>` quote delimiter for the inner quotes. LiteRT-LM 0.11.0 / 0.12.0's ANTLR function-call parser does not understand this token and raises `INVALID_ARGUMENT`, which surfaces as a 500 to the client. Affects every Anthropic tool-using client (notably Claude Code, which always sends Bash / Edit / Read tool definitions). Tracking upstream: <https://github.com/google-ai-edge/LiteRT-LM/issues/2418>. Workaround: turn off **Settings → Schema Injection** so tool calls go through the text-mode parser instead.
+
+### Example (curl, non-streaming)
+
+```bash
+curl http://PHONE_IP:8000/v1/messages \
+  -H "x-api-key: your-token" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Gemma-4-E2B-it",
+    "max_tokens": 256,
+    "messages": [{"role": "user", "content": "Say hello"}]
+  }'
+```
+
+### Example (Claude Code)
+
+```bash
+ANTHROPIC_BASE_URL=http://PHONE_IP:8000 \
+ANTHROPIC_AUTH_TOKEN=your-token \
+claude
+```
+
+Claude Code maps `ANTHROPIC_AUTH_TOKEN` to the `x-api-key` header. The `/v1` segment is appended automatically.
+
+## Anthropic Token Counter — `POST /v1/messages/count_tokens`
+
+Estimates the input-token count for a Messages-shaped request without running inference. Works even when no model is loaded.
+
+The body accepts the same fields as `/v1/messages`; `max_tokens` is optional here. The response is:
+
+```json
+{"input_tokens": 1042}
+```
+
+Counts are estimated as `chars / 4` (the same heuristic OlliteRT uses across the request log). This is not a tokenizer-exact count — there is no public LiteRT tokenizer API — but it tracks within ±20% of the runtime count for English chat traffic.
 
 ## Audio Transcriptions — `POST /v1/audio/transcriptions`
 

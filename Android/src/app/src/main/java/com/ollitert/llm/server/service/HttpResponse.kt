@@ -67,3 +67,31 @@ fun ModelLifecycle.ModelSelection.Error.toHttpResponse() = HttpResponse.Json(
   body = ResponseRenderer.renderJsonError(message),
   extraHeaders = buildMap { retryAfterSeconds?.let { put("Retry-After", it.toString()) } },
 )
+
+/**
+ * Build an Anthropic-shaped error response: `{type:"error", error:{type, message}}`.
+ *
+ * Distinct from [httpJsonError] which produces the OpenAI shape. Anthropic SDKs
+ * expect this exact envelope and parse [errorType] strings like
+ * `invalid_request_error`, `authentication_error`, `not_found_error`,
+ * `request_too_large`, `api_error`, `overloaded_error`.
+ */
+fun httpAnthropicError(statusCode: Int, errorType: String, message: String): HttpResponse.Json =
+  HttpResponse.Json(
+    statusCode = statusCode,
+    body = ResponseRenderer.renderAnthropicError(errorType, message),
+    extraHeaders = if (statusCode == 401) mapOf("WWW-Authenticate" to "Bearer") else emptyMap(),
+  )
+
+/** Re-shape a [ModelLifecycle.ModelSelection.Error] into the Anthropic envelope. */
+fun ModelLifecycle.ModelSelection.Error.toAnthropicHttpResponse(): HttpResponse.Json {
+  val errorType = when (statusCode) {
+    404 -> "not_found_error"
+    503 -> "overloaded_error"
+    else -> "api_error"
+  }
+  val base = httpAnthropicError(statusCode, errorType, message)
+  return retryAfterSeconds?.let {
+    base.copy(extraHeaders = base.extraHeaders + ("Retry-After" to it.toString()))
+  } ?: base
+}

@@ -32,6 +32,7 @@ import com.ollitert.llm.server.data.STREAM_OUTER_TIMEOUT_SAFETY_BUFFER_SECONDS
 import com.ollitert.llm.server.data.ServerPrefs
 import com.ollitert.llm.server.data.Model
 import com.ollitert.llm.server.data.RESPONSES_TIMEOUT_SECONDS
+import com.ollitert.llm.server.data.SSE_PING_INTERVAL_MS
 import com.ollitert.llm.server.data.WARMUP_MESSAGE
 import com.ollitert.llm.server.data.llmSupportAudio
 import com.ollitert.llm.server.data.llmSupportImage
@@ -40,7 +41,11 @@ import com.ollitert.llm.server.data.isThinkingEnabled
 import com.ollitert.llm.server.data.maxTokensInt
 import com.ollitert.llm.server.data.maxTokensLong
 import com.ollitert.llm.server.runtime.ServerLlmModelHelper
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
@@ -149,6 +154,17 @@ class InferenceRunner(
     schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
     onNativeToolCalls: ((List<ToolCall>) -> Unit)? = null,
+    // When true the per-model system prompt is suppressed — the request body already
+    // carries an explicit system prompt (Anthropic /v1/messages `system` field) and we
+    // do not want both layered.
+    suppressPerModelSystem: Boolean = false,
+    // Per-request thinking override. null = use the model's persisted setting; true/false
+    // forces thinking on/off for this request only. Forced-on requests on a model that
+    // does NOT support thinking are silently downgraded to off (the capability gate wins).
+    enableThinkingOverride: Boolean? = null,
+    // KV-cache reuse: when non-null, dispatch via Message.user(text) on the existing
+    // Conversation (skipping resetConversation) so the SDK only prefills the new turn.
+    incrementalUserText: String? = null,
   ): Pair<String?, String?> {
     // Track input tokens (rough estimate: ~4 chars per token)
     ServerMetrics.addTokensIn(estimateTokensLong(prompt))
@@ -170,7 +186,11 @@ class InferenceRunner(
       }
     }
 
-    val enableThinking = model.isThinkingEnabled
+    val enableThinking = if (model.llmSupportThinking) {
+      enableThinkingOverride ?: model.isThinkingEnabled
+    } else {
+      false
+    }
     val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
     // Captured inside the resetConversation lambda (which runs under inferenceLock) so
@@ -195,14 +215,18 @@ class InferenceRunner(
           originalConfig = model.configValues
           model.configValues = configSnapshot
         }
-        ServerLlmModelHelper.resetConversation(
-          model,
-          supportImage = supportImage,
-          supportAudio = supportAudio,
-          systemInstruction = buildSystemInstruction(model.prefsKey),
-          tools = schemaInjectionProviders,
-          initialMessages = schemaInjectionMessages,
-        )
+        if (incrementalUserText != null) {
+          Log.i(TAG, "INCREMENTAL_REUSE_BLOCKING requestId=$requestId model=${model.name} userTextLen=${incrementalUserText.length}")
+        } else {
+          ServerLlmModelHelper.resetConversation(
+            model,
+            supportImage = supportImage,
+            supportAudio = supportAudio,
+            systemInstruction = if (suppressPerModelSystem) null else buildSystemInstruction(model.prefsKey),
+            tools = schemaInjectionProviders,
+            initialMessages = schemaInjectionMessages,
+          )
+        }
       },
       runInference = { input, onPartial, onError ->
         ServerLlmModelHelper.runInference(
@@ -214,6 +238,7 @@ class InferenceRunner(
           images = images,
           audioClips = audioClips,
           extraContext = extraContext,
+          incrementalUserText = incrementalUserText,
           onNativeToolCalls = if (schemaInjectionProviders.isNotEmpty()) { calls ->
             capturedNativeToolCalls.set(calls)
           } else null,
@@ -299,6 +324,15 @@ class InferenceRunner(
     suspend fun emitContentDelta(writer: SseWriter, text: String)
     suspend fun emitThinkingClose(writer: SseWriter)
     suspend fun emitCancellation(writer: SseWriter, headerWritten: Boolean)
+    // True when the format wants its `message_start`-equivalent header sent
+    // immediately at request acceptance (before prefill begins) instead of being
+    // gated on the first token. Anthropic's Messages spec defines an explicit
+    // `message_start` event and ping events for the prefill window; OAI-shape
+    // formats have no such concept, so they keep the existing first-token gate.
+    val emitsHeaderEarly: Boolean get() = false
+    // Format-specific keep-alive emission while inference is still in prefill.
+    // Default is a no-op so non-Anthropic formats stay silent until first token.
+    suspend fun emitPing(writer: SseWriter) {}
     fun estimateInputTokens(prompt: String): Long
     fun estimateInputTokensInt(prompt: String): Int
     suspend fun emitCompletion(
@@ -311,6 +345,12 @@ class InferenceRunner(
       totalLatencyMs: Long,
       maxTokens: Int?,
       nativeToolCalls: List<ToolCall> = emptyList(),
+      // Whether the streaming truncator matched a configured stop string.
+      // OAI-shape formats ignore this and continue to derive finish_reason from token counts.
+      // Only the Anthropic format consumes it (to emit stop_reason="stop_sequence").
+      stopSequenceTriggered: Boolean = false,
+      // The matched stop string when stopSequenceTriggered is true. Null otherwise.
+      matchedStopSequence: String? = null,
     ): List<ToolCall>
     fun buildLogResponseJson(
       combinedText: String,
@@ -322,6 +362,38 @@ class InferenceRunner(
       parsedToolCalls: List<ToolCall>,
     ): String
     fun buildLogEventSuffix(parsedToolCalls: List<ToolCall>): String
+
+    /**
+     * Emit a mid-stream error in the format the client expects, then close the stream.
+     *
+     * Default implementation writes the OAI-shape error JSON (already produced by
+     * `ResponseRenderer.renderJsonError`) followed by `data: [DONE]` — same layout
+     * OAI clients expect. Anthropic's format overrides this to emit
+     * `event: error\ndata: {"type":"error","error":{...}}` per the Messages API spec.
+     *
+     * `headerWritten` lets the format synthesize a `message_start` first when an
+     * error fires before any token did — Anthropic SDKs need at least the start
+     * event before they accept an error event.
+     */
+    suspend fun emitError(
+      writer: SseWriter,
+      enrichedMessage: String,
+      suggestion: String?,
+      kind: ErrorKind,
+      oaiErrorJson: String,
+      headerWritten: Boolean,
+    ) {
+      writer.emit("data: $oaiErrorJson\n\n")
+      writer.emit(ResponseRenderer.SSE_DONE)
+    }
+
+    /**
+     * Body to persist in the request log entry when the stream errors out.
+     * Default returns the OAI-shape JSON the wire would have emitted; Anthropic's
+     * format overrides this so the Logs tab shows a matching Anthropic envelope.
+     */
+    fun buildLogErrorJson(enrichedMessage: String, suggestion: String?, kind: ErrorKind, oaiErrorJson: String): String =
+      oaiErrorJson
   }
 
   private class ResponsesApiFormat(
@@ -372,6 +444,8 @@ class InferenceRunner(
       totalLatencyMs: Long,
       maxTokens: Int?,
       nativeToolCalls: List<ToolCall>,
+      stopSequenceTriggered: Boolean,
+      matchedStopSequence: String?,
     ): List<ToolCall> {
       val parsedToolCalls = nativeToolCalls.ifEmpty {
         if (tools != null) ToolCallParser.parseAll(fullText, tools) else emptyList()
@@ -470,6 +544,8 @@ class InferenceRunner(
       totalLatencyMs: Long,
       maxTokens: Int?,
       nativeToolCalls: List<ToolCall>,
+      stopSequenceTriggered: Boolean,
+      matchedStopSequence: String?,
     ): List<ToolCall> {
       val parsedToolCalls = nativeToolCalls.ifEmpty {
         if (tools != null) ToolCallParser.parseAll(fullText, tools) else emptyList()
@@ -561,6 +637,8 @@ class InferenceRunner(
       totalLatencyMs: Long,
       maxTokens: Int?,
       nativeToolCalls: List<ToolCall>,
+      stopSequenceTriggered: Boolean,
+      matchedStopSequence: String?,
     ): List<ToolCall> {
       val finishReason = FinishReason.infer(completionTokens, maxTokens)
       writer.emit(ResponseRenderer.buildCompletionStreamFinalChunk(cmplId, modelName, now, finishReason))
@@ -595,6 +673,327 @@ class InferenceRunner(
     override fun buildLogEventSuffix(parsedToolCalls: List<ToolCall>): String = ""
   }
 
+  // ── Streaming format: /v1/messages (Anthropic) ─────────────────────────
+
+  /**
+   * Anthropic Messages SSE event sequence:
+   *   message_start → [content_block_start/delta/stop]+ → message_delta → message_stop
+   *
+   * Block indexing is lazy: [currentBlockIndex] starts at -1 and advances only when
+   * a block is actually opened. Thinking blocks come first when present, then exactly
+   * one text block (per Anthropic spec, all assistant text aggregates into a single
+   * block), then one tool_use block per tool call when buffered tool emission fires.
+   */
+  private class AnthropicMessagesFormat(
+    private val modelName: String,
+    private val requestModelId: String,
+    override val stopSequences: List<String>?,
+    private val tools: List<ToolSpec>?,
+    private val hasSchemaInjection: Boolean,
+    // Verbose-debug only: when true, log SSE event counter + first-event timing so
+    // disconnect-vs-stall cases can be distinguished post-hoc. Cheap (one Log.i per
+    // event), but still gated to avoid spamming logcat in normal use.
+    private val verboseDebug: Boolean = false,
+  ) : StreamingFormat {
+    private val msgId = "msg_${java.util.UUID.randomUUID().toString().replace("-", "").take(24)}"
+    override val sourceTag = "executeStreaming_messages"
+    // Same buffering rule as ChatCompletions: tools without schema injection require
+    // the full text to parse tool calls before any output is emitted.
+    override val bufferAllTokens = tools != null && !hasSchemaInjection
+
+    private var currentBlockIndex = -1
+    private var currentBlockOpen = false
+    private var currentBlockKind: String? = null  // "thinking" | "text" | "tool_use"
+
+    private var sseEventCount = 0
+    private var firstEmitNanos = 0L
+    private val createdNanos = System.nanoTime()
+
+    private suspend fun emitSse(writer: SseWriter, eventName: String, payload: String) {
+      writer.emit(ResponseRenderer.emitSseEvent(eventName, payload))
+      sseEventCount += 1
+      if (verboseDebug && firstEmitNanos == 0L) {
+        firstEmitNanos = System.nanoTime()
+        val ms = (firstEmitNanos - createdNanos) / 1_000_000
+        Log.i(TAG, "ANTHROPIC_SSE first_emit msgId=$msgId firstEventMs=$ms event=$eventName")
+      }
+    }
+
+    override val emitsHeaderEarly: Boolean = true
+
+    override suspend fun emitHeader(writer: SseWriter) {
+      val escapedModel = BridgeUtils.escapeSseText(requestModelId)
+      val payload =
+        """{"type":"message_start","message":{"id":"$msgId","type":"message","role":"assistant","model":"$escapedModel","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}"""
+      emitSse(writer, "message_start", payload)
+    }
+
+    override suspend fun emitPing(writer: SseWriter) {
+      // Spec: https://docs.anthropic.com/en/api/messages-streaming#ping-events
+      emitSse(writer, "ping", """{"type":"ping"}""")
+    }
+
+    private suspend fun openBlockIfNeeded(writer: SseWriter, kind: String) {
+      if (currentBlockOpen && currentBlockKind == kind) return
+      if (currentBlockOpen) closeCurrentBlock(writer)
+      currentBlockIndex += 1
+      currentBlockOpen = true
+      currentBlockKind = kind
+      val blockJson = when (kind) {
+        "thinking" -> """{"type":"thinking","thinking":""}"""
+        "text" -> """{"type":"text","text":""}"""
+        else -> """{"type":"$kind"}"""
+      }
+      val payload = """{"type":"content_block_start","index":$currentBlockIndex,"content_block":$blockJson}"""
+      emitSse(writer, "content_block_start", payload)
+    }
+
+    private suspend fun closeCurrentBlock(writer: SseWriter) {
+      if (!currentBlockOpen) return
+      val payload = """{"type":"content_block_stop","index":$currentBlockIndex}"""
+      emitSse(writer, "content_block_stop", payload)
+      currentBlockOpen = false
+      currentBlockKind = null
+    }
+
+    override suspend fun emitThinkingDelta(writer: SseWriter, text: String) {
+      // Strip the literal <think>...</think> wrappers that the OAI streaming path injects;
+      // Anthropic clients want the raw thinking text in a typed thinking block.
+      val cleaned = text.removePrefix("<think>")
+      if (cleaned.isEmpty()) return
+      openBlockIfNeeded(writer, "thinking")
+      val esc = BridgeUtils.escapeSseText(cleaned)
+      val payload = """{"type":"content_block_delta","index":$currentBlockIndex,"delta":{"type":"thinking_delta","thinking":"$esc"}}"""
+      emitSse(writer, "content_block_delta", payload)
+    }
+
+    override suspend fun emitContentDelta(writer: SseWriter, text: String) {
+      // Strip the </think> close tag the OAI path emits at the thinking→text boundary.
+      val cleaned = text.removePrefix("</think>")
+      if (cleaned.isEmpty()) return
+      openBlockIfNeeded(writer, "text")
+      val esc = BridgeUtils.escapeSseText(cleaned)
+      val payload = """{"type":"content_block_delta","index":$currentBlockIndex,"delta":{"type":"text_delta","text":"$esc"}}"""
+      emitSse(writer, "content_block_delta", payload)
+    }
+
+    override suspend fun emitThinkingClose(writer: SseWriter) {
+      // No-op: openBlockIfNeeded("text") will close the thinking block on the next
+      // content delta. Keeping this idempotent matches the OAI format's behavior.
+      if (currentBlockOpen && currentBlockKind == "thinking") closeCurrentBlock(writer)
+    }
+
+    override suspend fun emitCancellation(writer: SseWriter, headerWritten: Boolean) {
+      if (!headerWritten) emitHeader(writer)
+      if (currentBlockOpen) closeCurrentBlock(writer)
+      val delta = """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}"""
+      emitSse(writer, "message_delta", delta)
+      emitSse(writer, "message_stop", """{"type":"message_stop"}""")
+      if (verboseDebug) {
+        val totalMs = (System.nanoTime() - createdNanos) / 1_000_000
+        Log.i(TAG, "ANTHROPIC_SSE cancellation msgId=$msgId totalEvents=$sseEventCount totalMs=$totalMs")
+      }
+      writer.finish()
+    }
+
+    /**
+     * Emit an Anthropic-shaped mid-stream error event. The Anthropic spec defines:
+     *
+     *   event: error
+     *   data: {"type":"error","error":{"type":"<api_type>","message":"<text>"}}
+     *
+     * No `[DONE]` sentinel and no `message_stop` after — the SDK closes the stream
+     * on `event: error`. The server's per-kind suggestion (e.g. "Increase the
+     * Chat Completions timeout in Settings → Advanced") is appended into the
+     * message string because the Anthropic schema has no separate suggestion field.
+     */
+    override suspend fun emitError(
+      writer: SseWriter,
+      enrichedMessage: String,
+      suggestion: String?,
+      kind: ErrorKind,
+      oaiErrorJson: String,
+      headerWritten: Boolean,
+    ) {
+      if (!headerWritten) {
+        // Some Anthropic SDKs require message_start before any other event.
+        try { emitHeader(writer) } catch (_: Exception) { /* writer may be closed */ }
+      }
+      if (currentBlockOpen) {
+        try { closeCurrentBlock(writer) } catch (_: Exception) { /* same */ }
+      }
+      val anthropicErrorType = mapErrorKindToAnthropicType(kind)
+      // enrichedMessage already contains the suggestion appended by enrichLlmError
+      // ("$error — $suggestion"), so do NOT append it again here.
+      val payload = """{"type":"error","error":{"type":"${BridgeUtils.escapeSseText(anthropicErrorType)}","message":"${BridgeUtils.escapeSseText(enrichedMessage)}"}}"""
+      emitSse(writer, "error", payload)
+      if (verboseDebug) {
+        val totalMs = (System.nanoTime() - createdNanos) / 1_000_000
+        Log.i(TAG, "ANTHROPIC_SSE error msgId=$msgId errorType=$anthropicErrorType totalEvents=$sseEventCount totalMs=$totalMs")
+      }
+    }
+
+    override fun buildLogErrorJson(enrichedMessage: String, suggestion: String?, kind: ErrorKind, oaiErrorJson: String): String {
+      val anthropicErrorType = mapErrorKindToAnthropicType(kind)
+      // enrichedMessage already includes the suggestion via enrichLlmError.
+      return ResponseRenderer.renderAnthropicError(anthropicErrorType, enrichedMessage)
+    }
+
+    private fun mapErrorKindToAnthropicType(kind: ErrorKind): String = when (kind) {
+      ErrorKind.CONTEXT_OVERFLOW -> "invalid_request_error"
+      ErrorKind.TIMEOUT -> "api_error"
+      ErrorKind.MODEL_NOT_FOUND -> "not_found_error"
+      ErrorKind.MODEL_FILES_MISSING -> "not_found_error"
+      ErrorKind.MODEL_INSTANCE_NULL -> "overloaded_error"
+      ErrorKind.OOM -> "overloaded_error"
+      ErrorKind.PORT_BIND_FAILURE -> "api_error"
+      ErrorKind.IMAGE_DECODE_FAILED -> "invalid_request_error"
+      else -> "api_error"
+    }
+
+    override fun estimateInputTokens(prompt: String): Long = estimateTokensLong(prompt)
+    override fun estimateInputTokensInt(prompt: String): Int = estimateTokens(prompt)
+
+    override suspend fun emitCompletion(
+      writer: SseWriter,
+      fullText: String,
+      fullThinking: String,
+      promptTokens: Int,
+      completionTokens: Int,
+      ttfbMs: Long,
+      totalLatencyMs: Long,
+      maxTokens: Int?,
+      nativeToolCalls: List<ToolCall>,
+      stopSequenceTriggered: Boolean,
+      matchedStopSequence: String?,
+    ): List<ToolCall> {
+      val parsedToolCalls = nativeToolCalls.ifEmpty {
+        if (tools != null) ToolCallParser.parseAll(fullText, tools) else emptyList()
+      }
+
+      // Buffered path: open/close blocks synthetically so the client sees a valid
+      // event sequence even though no progressive deltas were emitted.
+      if (bufferAllTokens) {
+        if (fullThinking.isNotEmpty()) {
+          openBlockIfNeeded(writer, "thinking")
+          val esc = BridgeUtils.escapeSseText(fullThinking)
+          val payload = """{"type":"content_block_delta","index":$currentBlockIndex,"delta":{"type":"thinking_delta","thinking":"$esc"}}"""
+          emitSse(writer, "content_block_delta", payload)
+          closeCurrentBlock(writer)
+        }
+        if (fullText.isNotEmpty()) {
+          openBlockIfNeeded(writer, "text")
+          val esc = BridgeUtils.escapeSseText(fullText)
+          val payload = """{"type":"content_block_delta","index":$currentBlockIndex,"delta":{"type":"text_delta","text":"$esc"}}"""
+          emitSse(writer, "content_block_delta", payload)
+          closeCurrentBlock(writer)
+        }
+      } else {
+        // Progressive path: close whichever block is still open from the last delta.
+        if (currentBlockOpen) closeCurrentBlock(writer)
+      }
+
+      // Tool blocks emitted last — one block per call. Each block carries the id
+      // and name in content_block_start; the JSON arguments arrive as a single
+      // input_json_delta because the runtime emits tool calls atomically (no
+      // partial_json streaming today).
+      if (parsedToolCalls.isNotEmpty()) {
+        if (currentBlockOpen) closeCurrentBlock(writer)
+        for (call in parsedToolCalls) {
+          currentBlockIndex += 1
+          currentBlockOpen = true
+          currentBlockKind = "tool_use"
+          val startPayload = buildString {
+            append("""{"type":"content_block_start","index":""")
+            append(currentBlockIndex)
+            append(""","content_block":{"type":"tool_use","id":"""")
+            append(BridgeUtils.escapeSseText(call.id))
+            append("""",""")
+            append(""""name":"""")
+            append(BridgeUtils.escapeSseText(call.function.name))
+            append("""",""")
+            append(""""input":{}}}""")
+          }
+          emitSse(writer, "content_block_start", startPayload)
+          val argsEsc = BridgeUtils.escapeSseText(call.function.arguments.ifBlank { "{}" })
+          val deltaPayload = """{"type":"content_block_delta","index":$currentBlockIndex,"delta":{"type":"input_json_delta","partial_json":"$argsEsc"}}"""
+          emitSse(writer, "content_block_delta", deltaPayload)
+          closeCurrentBlock(writer)
+        }
+      }
+
+      // Final message_delta + message_stop.
+      val stopReason = when {
+        stopSequenceTriggered -> "stop_sequence"
+        parsedToolCalls.isNotEmpty() -> "tool_use"
+        FinishReason.infer(completionTokens, maxTokens) == FinishReason.LENGTH -> "max_tokens"
+        else -> "end_turn"
+      }
+      val stopSequenceField = if (stopReason == "stop_sequence" && matchedStopSequence != null) {
+        "\"" + BridgeUtils.escapeSseText(matchedStopSequence) + "\""
+      } else "null"
+      val deltaPayload = """{"type":"message_delta","delta":{"stop_reason":"$stopReason","stop_sequence":$stopSequenceField},"usage":{"input_tokens":$promptTokens,"output_tokens":$completionTokens}}"""
+      emitSse(writer, "message_delta", deltaPayload)
+      emitSse(writer, "message_stop", """{"type":"message_stop"}""")
+      if (verboseDebug) {
+        val totalMs = (System.nanoTime() - createdNanos) / 1_000_000
+        Log.i(TAG, "ANTHROPIC_SSE complete msgId=$msgId stopReason=$stopReason promptTokens=$promptTokens completionTokens=$completionTokens totalEvents=$sseEventCount totalMs=$totalMs")
+      }
+      writer.finish()
+      return parsedToolCalls
+    }
+
+    override fun buildLogResponseJson(
+      combinedText: String,
+      promptLen: Int,
+      promptTokens: Int,
+      completionTokens: Int,
+      ttfbMs: Long,
+      totalLatencyMs: Long,
+      parsedToolCalls: List<ToolCall>,
+    ): String {
+      // Logs render the Anthropic-shaped response shell so the Logs tab shows a
+      // coherent body. The matched stop sequence is unknown here (the streaming
+      // session's matchedStopSequence is not threaded into buildLogResponseJson),
+      // so we emit `null` — the wire response set the field correctly when needed.
+      val (thinking, visibleText) = if (combinedText.startsWith("<think>")) {
+        val close = combinedText.indexOf("</think>")
+        if (close >= 0) {
+          combinedText.substring("<think>".length, close) to combinedText.substring(close + "</think>".length)
+        } else "" to combinedText
+      } else "" to combinedText
+
+      val contentBuilder = StringBuilder()
+      if (thinking.isNotEmpty()) {
+        contentBuilder.append("""{"type":"thinking","thinking":"""")
+        contentBuilder.append(BridgeUtils.escapeSseText(thinking))
+        contentBuilder.append(""""},""")
+      }
+      contentBuilder.append("""{"type":"text","text":"""")
+      contentBuilder.append(BridgeUtils.escapeSseText(visibleText))
+      contentBuilder.append(""""}""")
+      for (call in parsedToolCalls) {
+        contentBuilder.append(""",{"type":"tool_use","id":"""")
+        contentBuilder.append(BridgeUtils.escapeSseText(call.id))
+        contentBuilder.append("""",""")
+        contentBuilder.append(""""name":"""")
+        contentBuilder.append(BridgeUtils.escapeSseText(call.function.name))
+        contentBuilder.append(""""}""")
+      }
+
+      val stopReason = when {
+        parsedToolCalls.isNotEmpty() -> "tool_use"
+        else -> "end_turn"
+      }
+      return """{"id":"$msgId","type":"message","role":"assistant","model":"${BridgeUtils.escapeSseText(requestModelId)}","content":[$contentBuilder],"stop_reason":"$stopReason","stop_sequence":null,"usage":{"input_tokens":$promptTokens,"output_tokens":$completionTokens}}"""
+    }
+
+    override fun buildLogEventSuffix(parsedToolCalls: List<ToolCall>): String {
+      if (parsedToolCalls.isEmpty()) return ""
+      return " tool_calls=${parsedToolCalls.joinToString(",") { it.function.name }} count=${parsedToolCalls.size}"
+    }
+  }
+
   // ── Streaming state management ──────────────────────────────────────────
 
   private inner class StreamState(
@@ -613,7 +1012,17 @@ class InferenceRunner(
     var firstTokenMs = 0L
     var inferenceStarted = false
     var inferenceCompleted = false
+    // True once ServerMetrics.onInferenceCompleted has been called for this request.
+    // Tracked separately from inferenceCompleted because the metric decrement and the
+    // local "we are done emitting" flag have different lifetimes — the metric pairs
+    // with onInferenceStarted and must fire at most once even if both the gateway
+    // callback and the safety-net finally try to clear it.
+    var metricsCompleted = false
     var stopSequenceTriggered = false
+    // The actual stop string that matched, set in lock-step with stopSequenceTriggered.
+    // Anthropic /v1/messages echoes this back in the response `stop_sequence` field;
+    // OAI-shape formats ignore it.
+    var matchedStopSequence: String? = null
 
     fun markStarted() {
       if (!inferenceStarted) {
@@ -624,6 +1033,20 @@ class InferenceRunner(
 
     fun markCompleted() {
       inferenceCompleted = true
+    }
+
+    /**
+     * Idempotently decrement the inferring counter. Called from the gateway's
+     * onInferenceFinished callback in the normal path, and from the streamInference
+     * finally block as a safety net. Without the idempotent guard, an exception
+     * that bypasses onInferenceFinished would leak the counter and pin the
+     * "processing" pill on indefinitely.
+     */
+    fun markMetricsCompleted() {
+      if (inferenceStarted && !metricsCompleted) {
+        metricsCompleted = true
+        ServerMetrics.onInferenceCompleted()
+      }
     }
 
     fun buildCancelledPartial(): String? {
@@ -658,14 +1081,19 @@ class InferenceRunner(
       if (stopSequences.isNullOrEmpty() || stopSequenceTriggered) return
       val currentText = fullText.toString()
       var earliest = currentText.length
+      var matched: String? = null
       for (stop in stopSequences) {
         val idx = currentText.indexOf(stop)
-        if (idx in 0 until earliest) earliest = idx
+        if (idx in 0 until earliest) {
+          earliest = idx
+          matched = stop
+        }
       }
       if (earliest < currentText.length) {
         fullText.clear()
         fullText.append(currentText.substring(0, earliest))
         stopSequenceTriggered = true
+        matchedStopSequence = matched
         ServerLlmModelHelper.stopResponse(model)
       }
     }
@@ -783,7 +1211,7 @@ class InferenceRunner(
       val convertedNativeCalls = if (nativeCalls != null && nativeCalls.isNotEmpty()) {
         SchemaInjectionBridge.convertNativeToolCalls(nativeCalls)
       } else emptyList()
-      val parsedToolCalls = format.emitCompletion(writer, fullText.toString(), fullThinking.toString(), promptTokens, completionTokens, ttfbMs, totalLatencyMs, effectiveMaxTokens, convertedNativeCalls)
+      val parsedToolCalls = format.emitCompletion(writer, fullText.toString(), fullThinking.toString(), promptTokens, completionTokens, ttfbMs, totalLatencyMs, effectiveMaxTokens, convertedNativeCalls, stopSequenceTriggered, matchedStopSequence)
 
       if (logId != null) {
         val combinedText = buildCombinedText(fullText, fullThinking)
@@ -815,6 +1243,7 @@ class InferenceRunner(
       error: String,
       writer: SseWriter,
       channel: Channel<StreamEvent>,
+      format: StreamingFormat,
     ) {
       if (logId != null) RequestLogStore.unregisterCancellation(logId)
       markCompleted()
@@ -822,13 +1251,14 @@ class InferenceRunner(
       ServerMetrics.incrementErrorCount(kind.category)
       logEvent("request_error id=$requestId endpoint=$endpoint error=${error.take(200)} streaming=true")
       val suggestion = ErrorSuggestions.suggest(kind, context)
+      val oaiErrorJson = ResponseRenderer.renderJsonError(enrichedError, suggestion, kind)
+      val logErrorJson = format.buildLogErrorJson(enrichedError, suggestion, kind, oaiErrorJson)
       if (logId != null) {
-        val errorJson = ResponseRenderer.renderJsonError(enrichedError, suggestion, kind)
         val actualTokens = extractActualTokenCounts(error)
         RequestLogStore.update(logId) {
           it.copy(
             partialText = null,
-            responseBody = errorJson,
+            responseBody = logErrorJson,
             isPending = false,
             latencyMs = elapsedMs(),
             level = LogLevel.ERROR,
@@ -840,8 +1270,7 @@ class InferenceRunner(
         }
       }
       try {
-        writer.emit("data: ${ResponseRenderer.renderJsonError(enrichedError, suggestion, kind)}\n\n")
-        writer.emit(ResponseRenderer.SSE_DONE)
+        format.emitError(writer, enrichedError, suggestion, kind, oaiErrorJson, headerWritten)
         writer.finish()
       } catch (e: Exception) { Log.w(TAG, "writer.finish() failed during cleanup", e) }
       channel.close()
@@ -890,10 +1319,13 @@ class InferenceRunner(
     prefs: RequestPrefsSnapshot? = null,
     schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
+    suppressPerModelSystem: Boolean = false,
+    enableThinkingOverride: Boolean? = null,
+    incrementalUserText: String? = null,
   ): HttpResponse {
     val now = BridgeUtils.epochSeconds()
     val format = ChatCompletionsFormat(model.name, now, stopSequences, tools, json, includeUsage, hasSchemaInjection = schemaInjectionProviders.isNotEmpty())
-    return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips, logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages)
+    return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips, logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages, suppressPerModelSystem, enableThinkingOverride, incrementalUserText)
   }
 
   // ── Streaming inference: /v1/completions ───────────────────────────────
@@ -916,6 +1348,43 @@ class InferenceRunner(
     return streamInference(model, prompt, requestId, endpoint, format, timeoutSeconds, emptyList(), emptyList(), logId, configSnapshot, prefs)
   }
 
+  // ── Streaming inference: /v1/messages (Anthropic) ───────────────────────
+
+  fun streamMessagesLlm(
+    model: Model,
+    prompt: String,
+    requestId: String,
+    endpoint: String = "/v1/messages",
+    timeoutSeconds: Long = CHAT_COMPLETIONS_TIMEOUT_SECONDS,
+    images: List<ByteArray> = emptyList(),
+    audioClips: List<ByteArray> = emptyList(),
+    logId: String? = null,
+    stopSequences: List<String>? = null,
+    tools: List<ToolSpec>? = null,
+    configSnapshot: Map<String, Any>? = null,
+    prefs: RequestPrefsSnapshot? = null,
+    schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
+    schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
+    suppressPerModelSystem: Boolean = false,
+    enableThinkingOverride: Boolean? = null,
+    requestModelId: String,
+    incrementalUserText: String? = null,
+  ): HttpResponse {
+    val format = AnthropicMessagesFormat(
+      modelName = model.name,
+      requestModelId = requestModelId,
+      stopSequences = stopSequences,
+      tools = tools,
+      hasSchemaInjection = schemaInjectionProviders.isNotEmpty(),
+      verboseDebug = prefs?.verboseDebug ?: ServerPrefs.isVerboseDebugEnabled(context),
+    )
+    return streamInference(
+      model, prompt, requestId, endpoint, format, timeoutSeconds, images, audioClips,
+      logId, configSnapshot, prefs, schemaInjectionProviders, schemaInjectionMessages,
+      suppressPerModelSystem, enableThinkingOverride, incrementalUserText,
+    )
+  }
+
   // ── Unified streaming implementation ────────────────────────────────────
 
   private fun streamInference(
@@ -932,6 +1401,12 @@ class InferenceRunner(
     prefs: RequestPrefsSnapshot? = null,
     schemaInjectionProviders: List<com.google.ai.edge.litertlm.ToolProvider> = emptyList(),
     schemaInjectionMessages: List<com.google.ai.edge.litertlm.Message> = emptyList(),
+    suppressPerModelSystem: Boolean = false,
+    enableThinkingOverride: Boolean? = null,
+    // KV-cache reuse: when non-null, send only this user text via Message.user(...)
+    // on the existing Conversation instead of resetting + sending the full rendered
+    // [prompt]. Caller (EndpointHandlers) decides eligibility via decideIncrementalReuse.
+    incrementalUserText: String? = null,
   ): HttpResponse {
     val streamStartMs = SystemClock.elapsedRealtime()
     ServerMetrics.addTokensIn(estimateTokensLong(prompt))
@@ -955,7 +1430,11 @@ class InferenceRunner(
       }
     }
 
-    val enableThinking = model.isThinkingEnabled
+    val enableThinking = if (model.llmSupportThinking) {
+      enableThinkingOverride ?: model.isThinkingEnabled
+    } else {
+      false
+    }
     val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
     // Read prefs eagerly (before the Ktor coroutine runs) — SharedPreferences reads
@@ -974,6 +1453,45 @@ class InferenceRunner(
       var originalConfig: Map<String, Any>? = null
       val capturedNativeToolCalls = AtomicReference<List<com.google.ai.edge.litertlm.ToolCall>?>(null)
 
+      // Pre-emit the format's header (e.g. Anthropic `message_start`) as the very
+      // first SSE bytes so the client sees a response before prefill begins. Without
+      // this, on-device prefill (often >30s for multi-KB prompts on Gemma-4-E2B)
+      // exceeds the SDK's idle timeout and the client cancels with zero output.
+      // OAI-shape formats opt out via emitsHeaderEarly=false.
+      if (!format.bufferAllTokens && format.emitsHeaderEarly && !writer.isCancelled) {
+        try {
+          format.emitHeader(writer)
+          state.headerWritten = true
+        } catch (e: Exception) {
+          Log.w(TAG, "Pre-emit header failed for $requestId", e)
+        }
+      }
+
+      // Heartbeat coroutine: while inference is still in prefill (no token observed)
+      // and the writer is alive, emit a format-specific ping every SSE_PING_INTERVAL_MS
+      // so the client's idle-stream timeout doesn't fire. Anthropic's spec defines the
+      // `ping` event explicitly; non-Anthropic formats default to a no-op so this loop
+      // is harmless on every code path. Cancelled as soon as the first token arrives,
+      // the channel closes, or the SSE writer reports cancellation.
+      val heartbeatJob = if (format.emitsHeaderEarly) {
+        CoroutineScope(kotlin.coroutines.coroutineContext).launch {
+          try {
+            while (isActive) {
+              delay(SSE_PING_INTERVAL_MS)
+              if (writer.isCancelled || state.firstTokenMs != 0L || state.inferenceCompleted) break
+              try {
+                format.emitPing(writer)
+              } catch (e: Exception) {
+                Log.w(TAG, "Heartbeat ping failed for $requestId", e)
+                break
+              }
+            }
+          } catch (_: kotlinx.coroutines.CancellationException) {
+            // Normal scope cancel — nothing to do.
+          }
+        }
+      } else null
+
       // Launch inference on the executor thread. Callbacks send events into the channel
       // via trySend() — non-blocking from the executor thread's perspective.
       InferenceGateway.executeStreaming(
@@ -991,14 +1509,21 @@ class InferenceRunner(
             originalConfig = model.configValues
             model.configValues = configSnapshot
           }
-          ServerLlmModelHelper.resetConversation(
-            model,
-            supportImage = supportImage,
-            supportAudio = supportAudio,
-            systemInstruction = buildSystemInstruction(model.prefsKey),
-            tools = schemaInjectionProviders,
-            initialMessages = schemaInjectionMessages,
-          )
+          if (incrementalUserText != null) {
+            // Reuse the live Conversation: SDK has the prior history in its internal
+            // diff state, and runInference will dispatch via Message.user(text) so
+            // only the new turn is prefilled.
+            Log.i(TAG, "INCREMENTAL_REUSE requestId=$requestId model=${model.name} userTextLen=${incrementalUserText.length}")
+          } else {
+            ServerLlmModelHelper.resetConversation(
+              model,
+              supportImage = supportImage,
+              supportAudio = supportAudio,
+              systemInstruction = if (suppressPerModelSystem) null else buildSystemInstruction(model.prefsKey),
+              tools = schemaInjectionProviders,
+              initialMessages = schemaInjectionMessages,
+            )
+          }
         },
         runInference = { input, onPartial, onError ->
           ServerLlmModelHelper.runInference(
@@ -1010,6 +1535,7 @@ class InferenceRunner(
             images = images,
             audioClips = audioClips,
             extraContext = extraContext,
+            incrementalUserText = incrementalUserText,
             onNativeToolCalls = if (schemaInjectionProviders.isNotEmpty()) { calls ->
               capturedNativeToolCalls.set(calls)
             } else null,
@@ -1026,7 +1552,7 @@ class InferenceRunner(
           if (originalConfig != null && model.instance != null) {
             model.configValues = originalConfig
           }
-          if (state.inferenceStarted) ServerMetrics.onInferenceCompleted()
+          state.markMetricsCompleted()
         },
         onCaughtThrowable = { t -> emitDebugStackTrace(t, format.sourceTag, model.name) },
       )
@@ -1040,6 +1566,10 @@ class InferenceRunner(
           for (event in channel) {
             // Check for client disconnect (Ktor closed the writer)
             if (writer.isCancelled) {
+              val elapsedMs = state.elapsedMs()
+              Log.i(TAG, "STREAM_DISCONNECT requestId=$requestId endpoint=$endpoint elapsedMs=$elapsedMs " +
+                "firstTokenMs=${state.firstTokenMs} headerWritten=${state.headerWritten} " +
+                "fullText.len=${state.fullText.length} fullThinking.len=${state.fullThinking.length}")
               ServerLlmModelHelper.stopResponse(model)
               state.markCompleted()
               state.logCancellation()
@@ -1067,7 +1597,7 @@ class InferenceRunner(
               }
 
               is StreamEvent.Error -> {
-                state.handleError(event.error, writer, channel)
+                state.handleError(event.error, writer, channel, format)
               }
             }
           }
@@ -1088,8 +1618,13 @@ class InferenceRunner(
         logEvent("request_cancelled id=$requestId endpoint=$endpoint streaming=true outputChars=${state.fullText.length}")
       } finally {
         // Safety net: guarantee isInferring flag is cleared even if an unexpected
-        // exception bypasses normal completion/cancellation paths.
+        // exception bypasses normal completion/cancellation paths. markCompleted
+        // flips the local emitting-done flag; markMetricsCompleted decrements
+        // the ServerMetrics counter idempotently so the "processing" pill clears
+        // even when onInferenceFinished was never reached.
         state.markCompleted()
+        state.markMetricsCompleted()
+        heartbeatJob?.cancel()
       }
     }
   }
@@ -1194,17 +1729,23 @@ class InferenceRunner(
 
     /**
      * Truncates model output at the first occurrence of any stop sequence.
-     * Returns the truncated text and whether truncation occurred.
+     * Returns (truncated text, was truncation applied, the stop string that matched
+     * — null when nothing matched). The matched string is needed by the Anthropic
+     * /v1/messages response, which echoes it back in the `stop_sequence` field.
      */
-    fun applyStopSequences(text: String, stopSequences: List<String>?): Pair<String, Boolean> {
-      if (stopSequences.isNullOrEmpty()) return text to false
+    fun applyStopSequences(text: String, stopSequences: List<String>?): Triple<String, Boolean, String?> {
+      if (stopSequences.isNullOrEmpty()) return Triple(text, false, null)
       var earliest = text.length
+      var matched: String? = null
       for (stop in stopSequences) {
         val idx = text.indexOf(stop)
-        if (idx in 0 until earliest) earliest = idx
+        if (idx in 0 until earliest) {
+          earliest = idx
+          matched = stop
+        }
       }
-      return if (earliest < text.length) text.substring(0, earliest) to true
-      else text to false
+      return if (earliest < text.length) Triple(text.substring(0, earliest), true, matched)
+      else Triple(text, false, null)
     }
 
     /**

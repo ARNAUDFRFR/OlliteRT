@@ -16,6 +16,7 @@
 
 package com.ollitert.llm.server.ui.server.logs
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -147,6 +148,16 @@ internal suspend fun exportLogsAsJson(context: Context, entries: List<RequestLog
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
       type = "application/json"
       putExtra(Intent.EXTRA_STREAM, uri)
+      // Some receivers derive the saved filename from the SEND body when no
+      // hint is set, which produces garbage like `{-  -id-- -log-...-,.txt`
+      // for our pretty-printed JSON. Populate every Android-documented filename
+      // hint (ClipData.description.label, EXTRA_TITLE, EXTRA_SUBJECT) so any
+      // receiver that honors any of them lands on the real filename. Receivers
+      // that ignore all three (text-only consumers of the clipboard share
+      // popup, for example) fall back to body sniffing regardless.
+      putExtra(Intent.EXTRA_SUBJECT, file.name)
+      putExtra(Intent.EXTRA_TITLE, file.name)
+      clipData = ClipData.newRawUri(file.name, uri)
       addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.logs_export_chooser_title)))
@@ -196,6 +207,9 @@ internal suspend fun exportLogcat(context: Context) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
       type = "text/plain"
       putExtra(Intent.EXTRA_STREAM, uri)
+      putExtra(Intent.EXTRA_SUBJECT, file.name)
+      putExtra(Intent.EXTRA_TITLE, file.name)
+      clipData = ClipData.newRawUri(file.name, uri)
       addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.logcat_export_chooser_title)))

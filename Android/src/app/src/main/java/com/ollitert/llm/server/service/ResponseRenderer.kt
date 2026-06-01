@@ -48,6 +48,18 @@ object ResponseRenderer {
     return """{"error":{"message":"$escaped","type":"$type","param":null,"code":$codeJson$suggestionField}}"""
   }
 
+  /**
+   * Render an Anthropic-shaped error envelope: `{type:"error", error:{type, message}}`.
+   *
+   * Anthropic SDKs reject unrecognized error envelopes — they don't fall back to
+   * the OpenAI shape — so this is required for any 4xx/5xx response on /v1/messages.
+   */
+  fun renderAnthropicError(errorType: String, message: String): String {
+    val escapedType = BridgeUtils.escapeSseText(errorType)
+    val escapedMessage = BridgeUtils.escapeSseText(message)
+    return """{"type":"error","error":{"type":"$escapedType","message":"$escapedMessage"}}"""
+  }
+
   fun emitSseEvent(event: String, payload: String): String = "event: $event\n" + "data: $payload\n\n"
 
   fun buildTextSsePayload(modelId: String, text: String, inputTokens: Int = 0, outputTokens: Int = 0): String {

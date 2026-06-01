@@ -239,7 +239,6 @@ class PromptCompactorTest {
       chatTemplate = null,
       maxContext = 1000,
       truncateHistory = true,
-      compactToolSchemas = true,
       trimPrompts = true,
     )
     assertFalse(result.compacted)
@@ -262,7 +261,6 @@ class PromptCompactorTest {
       chatTemplate = null,
       maxContext = 20,
       truncateHistory = true,
-      compactToolSchemas = false,
       trimPrompts = false,
     )
     assertTrue("should contain truncation strategy", result.strategies.any { it.startsWith("truncated:") })
@@ -282,7 +280,6 @@ class PromptCompactorTest {
       chatTemplate = null,
       maxContext = 15,
       truncateHistory = true,
-      compactToolSchemas = false,
       trimPrompts = false,
     )
     assertTrue("system message should survive", result.prompt.contains("IMPORTANT_SYSTEM"))
@@ -300,7 +297,6 @@ class PromptCompactorTest {
       chatTemplate = null,
       maxContext = 1,
       truncateHistory = false,
-      compactToolSchemas = false,
       trimPrompts = false,
     )
     assertFalse(result.compacted)
@@ -319,7 +315,6 @@ class PromptCompactorTest {
       chatTemplate = null,
       maxContext = 5, // maxChars = 20
       truncateHistory = false,
-      compactToolSchemas = false,
       trimPrompts = true,
     )
     assertTrue(result.compacted)

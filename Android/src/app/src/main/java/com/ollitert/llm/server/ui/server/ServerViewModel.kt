@@ -22,6 +22,7 @@ import androidx.lifecycle.viewModelScope
 import com.ollitert.llm.server.data.ACTION_IN_FLIGHT_DEBOUNCE_MS
 import com.ollitert.llm.server.data.ServerPrefs
 import com.ollitert.llm.server.service.ServerService
+import com.ollitert.llm.server.common.ServerStatus
 import com.ollitert.llm.server.service.ServerMetrics
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -44,6 +45,7 @@ class ServerViewModel @Inject constructor(
   val activeModelSize = ServerMetrics.activeModelSize
   val port = ServerMetrics.port
   val bindAddress = ServerMetrics.bindAddress
+  val isLoopbackOnly = ServerMetrics.isLoopbackOnly
   val startedAtMs = ServerMetrics.startedAtMs
   val requestCount = ServerMetrics.requestCount
   val tokensGenerated = ServerMetrics.tokensGenerated
@@ -94,7 +96,17 @@ class ServerViewModel @Inject constructor(
     if (actionInFlight) return
     setActionInFlight()
     val currentModel = activeModelName.value
-    ServerService.reload(context, port, currentModel)
+    // Reloading mid-load is a known crash path: ServerService.reload runs cleanup
+    // (Engine.close, executor shutdown) on a model whose native init hasn't returned
+    // yet, and the SDK occasionally faults inside liblitertlm_jni.so when the
+    // Conversation/Engine is destroyed while async work is still scheduled. Defer
+    // the reload until the current load finishes — same pattern the inference
+    // settings sheet uses (queueReloadAfterLoad).
+    if (status.value == ServerStatus.LOADING && currentModel != null) {
+      ServerService.queueReloadAfterLoad(port, currentModel, configValues = null)
+    } else {
+      ServerService.reload(context, port, currentModel)
+    }
   }
 
   /**

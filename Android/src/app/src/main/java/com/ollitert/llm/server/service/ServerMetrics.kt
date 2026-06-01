@@ -65,6 +65,12 @@ object ServerMetrics {
   private val _bindAddress = sessionFlow<String?>(null)
   val bindAddress: StateFlow<String?> = _bindAddress.asStateFlow()
 
+  // True when the server is reachable only via loopback (no Wi-Fi IP detected).
+  // UI uses this to label the endpoint as "loopback only" so users know remote LAN
+  // clients can't reach it but on-device clients (termux, aichat) can.
+  private val _isLoopbackOnly = sessionFlow(false)
+  val isLoopbackOnly: StateFlow<Boolean> = _isLoopbackOnly.asStateFlow()
+
   /** Epoch millis when the server entered RUNNING state, or 0 if stopped. */
   private val _startedAtMs = sessionFlow(0L)
   val startedAtMs: StateFlow<Long> = _startedAtMs.asStateFlow()
@@ -104,6 +110,17 @@ object ServerMetrics {
   private val _audioRequests = sessionAtomic()
   private val _audioRequestsFlow = sessionFlow(0L)
   val audioRequests: StateFlow<Long> = _audioRequestsFlow.asStateFlow()
+
+  // Anthropic /v1/messages requests — counted in addition to the modality counter so
+  // operators can see how many of their text requests come through the Anthropic API
+  // versus the OpenAI API. Bumped from the Anthropic handler, not from recordModality.
+  private val _messagesRequests = sessionAtomic()
+  private val _messagesRequestsFlow = sessionFlow(0L)
+  val messagesRequests: StateFlow<Long> = _messagesRequestsFlow.asStateFlow()
+
+  fun incrementMessagesRequests() {
+    _messagesRequestsFlow.value = _messagesRequests.incrementAndGet()
+  }
 
   // Time to first token (TTFB) tracking
   private val _lastTtfbMs = sessionFlow(0L)
@@ -264,7 +281,12 @@ object ServerMetrics {
 
   fun onServerRunning(bindAddress: String?) {
     _status.value = ServerStatus.RUNNING
-    _bindAddress.value = bindAddress
+    // When no Wi-Fi IP is detected, fall back to "localhost" so on-device clients
+    // (termux, aichat, browsers) still see a usable endpoint URL on the Status screen
+    // and the Copy button has something to copy. The server already binds 0.0.0.0
+    // which accepts loopback regardless of network state.
+    _isLoopbackOnly.value = bindAddress == null
+    _bindAddress.value = bindAddress ?: "localhost"
     _startedAtMs.value = System.currentTimeMillis()
     _modelCreatedAtEpoch.value = System.currentTimeMillis() / 1000
     _loadingStartedAtMs.value = 0L

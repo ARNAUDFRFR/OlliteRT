@@ -824,6 +824,7 @@ fun DownloadAndTryButton(
 
   if (showWifiWarning) {
     WifiWarningAlert(
+      port = com.ollitert.llm.server.data.ServerPrefs.getPort(context),
       onStartAnyway = {
         showWifiWarning = false
         onClicked()

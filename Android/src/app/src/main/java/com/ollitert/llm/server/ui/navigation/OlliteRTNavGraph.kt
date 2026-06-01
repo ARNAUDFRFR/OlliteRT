@@ -18,6 +18,8 @@
 package com.ollitert.llm.server.ui.navigation
 
 import android.util.Log
+import android.widget.Toast
+import com.ollitert.llm.server.R
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -38,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -277,10 +280,19 @@ fun OlliteRTNavHost(
       }
       val settingsServerStatus by serverViewModel.status.collectAsStateWithLifecycle()
       val downloadedModelNames = modelManagerViewModel.getAllDownloadedModels().map { it.name }
+      val toastReloadPending = stringResource(R.string.toast_settings_saved_reload_pending)
+      val toastRestarting = stringResource(R.string.toast_server_restarting)
       SettingsScreen(
         onBackClick = { navController.navigateUp() },
         serverStatus = settingsServerStatus,
-        onRestartServer = { serverViewModel.reloadServer() },
+        onRestartServer = {
+          // Snapshot the status before issuing the reload so the toast reflects the
+          // path the ViewModel will pick (queue when LOADING, immediate otherwise).
+          val isLoading = settingsServerStatus == ServerStatus.LOADING
+          serverViewModel.reloadServer()
+          val msg = if (isLoading) toastReloadPending else toastRestarting
+          Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        },
         onStopServer = { serverViewModel.stopServer() },
         onNavigateToModels = {
           navController.navigate(OlliteRTRoutes.MODELS) {

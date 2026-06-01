@@ -84,4 +84,23 @@ class FinishReasonTest {
     assertEquals(25, completionTokens)
     assertEquals("stop", FinishReason.infer(completionTokens, maxTokens = 100))
   }
+
+  @Test
+  fun inferWithStopSequenceReportsStopSequenceWhenTriggered() {
+    assertEquals(FinishReason.STOP_SEQUENCE, FinishReason.inferWithStopSequence(10, 100, true))
+  }
+
+  @Test
+  fun inferWithStopSequenceMatchesInferWhenNotTriggered() {
+    assertEquals(FinishReason.STOP, FinishReason.inferWithStopSequence(10, 100, false))
+    assertEquals(FinishReason.STOP, FinishReason.inferWithStopSequence(0, 100, false))
+  }
+
+  @Test
+  fun inferWithStopSequenceLengthWinsOverStopSequence() {
+    // Length precedence — a model that hit max_tokens and happened to also emit
+    // a configured stop string is still length-bound. Only natural STOPs become
+    // STOP_SEQUENCE.
+    assertEquals(FinishReason.LENGTH, FinishReason.inferWithStopSequence(95, 100, true))
+  }
 }

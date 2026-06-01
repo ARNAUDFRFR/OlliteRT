@@ -28,6 +28,8 @@ enum class LlmHttpRouteHandler {
   COMPLETIONS,
   CHAT_COMPLETIONS,
   RESPONSES,
+  MESSAGES,
+  MESSAGES_COUNT_TOKENS,
   SERVER_STOP,
   SERVER_RELOAD,
   SERVER_THINKING,
@@ -47,7 +49,7 @@ data class Route(
 
 object RouteResolver {
   fun isSupportedMethod(method: String): Boolean {
-    return method == "GET" || method == "POST" || method == "OPTIONS"
+    return method == "GET" || method == "POST" || method == "OPTIONS" || method == "HEAD"
   }
 
   fun resolve(method: String, rawUri: String): Route? {
@@ -73,6 +75,8 @@ object RouteResolver {
           "/v1/chat/completions" ->
             Route(handler = LlmHttpRouteHandler.CHAT_COMPLETIONS, requiresAuth = true)
           "/v1/responses" -> Route(handler = LlmHttpRouteHandler.RESPONSES, requiresAuth = true)
+          "/v1/messages" -> Route(handler = LlmHttpRouteHandler.MESSAGES, requiresAuth = true)
+          "/v1/messages/count_tokens" -> Route(handler = LlmHttpRouteHandler.MESSAGES_COUNT_TOKENS, requiresAuth = true)
           "/v1/server/stop" -> Route(handler = LlmHttpRouteHandler.SERVER_STOP, requiresAuth = true)
           "/v1/server/reload" -> Route(handler = LlmHttpRouteHandler.SERVER_RELOAD, requiresAuth = true)
           "/v1/server/thinking" -> Route(handler = LlmHttpRouteHandler.SERVER_THINKING, requiresAuth = true)

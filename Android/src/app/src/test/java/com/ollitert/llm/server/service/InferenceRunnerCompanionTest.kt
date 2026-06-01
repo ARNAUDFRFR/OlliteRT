@@ -82,6 +82,28 @@ class InferenceRunnerCompanionTest {
     assertEquals("a", text)
   }
 
+  @Test
+  fun applyStopSequencesReturnsMatchedSequence() {
+    val (_, triggered, matched) = InferenceRunner.applyStopSequences("hello<stop>world", listOf("<stop>", "<other>"))
+    assertTrue(triggered)
+    assertEquals("<stop>", matched)
+  }
+
+  @Test
+  fun applyStopSequencesNullMatchedWhenNothingTriggers() {
+    val (_, triggered, matched) = InferenceRunner.applyStopSequences("hello world", listOf("xyz"))
+    assertEquals(false, triggered)
+    assertEquals(null, matched)
+  }
+
+  @Test
+  fun applyStopSequencesEarliestSequenceWins() {
+    // "b" appears before "world" — the earliest match wins, not the first list entry.
+    val (text, _, matched) = InferenceRunner.applyStopSequences("ab world", listOf("world", "b"))
+    assertEquals("a", text)
+    assertEquals("b", matched)
+  }
+
   // ── applyResponseFormat() ────────────────────────────────────────────────
 
   @Test

@@ -433,6 +433,11 @@ class ServerService : Service() {
       inferenceRunner = runner,
       modelLifecycle = modelLifecycle,
     )
+    val anthropicEndpointHandlers = AnthropicEndpointHandlers(
+      json = json,
+      endpointHandlers = handlers,
+      nextRequestId = { nextRequestId() },
+    )
     server = KtorServer(
       port = port,
       serviceContext = this,
@@ -442,6 +447,7 @@ class ServerService : Service() {
       nextRequestId = { nextRequestId() },
       emitDebugStackTrace = { t, src, name -> emitDebugStackTrace(t, src, name) },
       audioTranscriptionHandler = audioTranscriptionHandler,
+      anthropicEndpointHandlers = anthropicEndpointHandlers,
       inferenceLock = inferenceLock,
     )
     return try {

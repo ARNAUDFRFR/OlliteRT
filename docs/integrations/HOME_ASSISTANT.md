@@ -222,3 +222,70 @@ automation:
 
 > [!TIP]
 > OlliteRT's Settings screen includes a **"Copy Configuration"** button that generates a complete `configuration.yaml` snippet pre-filled with your device's current IP address, port, and bearer token. No manual editing needed — just paste into your `configuration.yaml`.
+
+## Anthropic Messages API
+
+OlliteRT speaks the Anthropic Messages API on `/v1/messages` and `/v1/messages/count_tokens` in addition to the OpenAI-compatible endpoints. Anthropic SDKs and Claude Code can target the phone directly with no proxy.
+
+### Authentication
+
+Both `Authorization: Bearer <token>` and `x-api-key: <token>` are accepted. The `x-api-key` header carries the raw token with no `Bearer` prefix — this is the form Claude Code and the official Anthropic SDKs use.
+
+### Curl example — non-streaming
+
+```bash
+curl -s http://<phone>:8000/v1/messages \
+  -H "x-api-key: <token>" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "local",
+    "max_tokens": 256,
+    "messages": [{"role": "user", "content": "Say hi"}]
+  }'
+```
+
+### Curl example — streaming
+
+```bash
+curl -N http://<phone>:8000/v1/messages \
+  -H "x-api-key: <token>" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "local",
+    "max_tokens": 256,
+    "stream": true,
+    "messages": [{"role": "user", "content": "Stream a haiku"}]
+  }'
+```
+
+### Curl example — count_tokens
+
+```bash
+curl -s http://<phone>:8000/v1/messages/count_tokens \
+  -H "x-api-key: <token>" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "local",
+    "messages": [{"role": "user", "content": "How many tokens is this?"}]
+  }'
+```
+
+### Claude Code
+
+```bash
+export ANTHROPIC_BASE_URL="http://<phone>:8000"
+export ANTHROPIC_AUTH_TOKEN="<your bearer token>"
+claude
+```
+
+Claude Code maps `ANTHROPIC_AUTH_TOKEN` to the `x-api-key` header. The `/v1` segment is appended automatically.
+
+### Limitations
+
+- Prompt caching (`cache_control`) is accepted but discarded — there is no KV reuse beyond what LiteRT does internally.
+- URL image sources, `document` blocks, and computer-use tool types are rejected with a 400.
+- When tools are present and schema injection is OFF, output is buffered and arrives at end-of-stream (a constraint shared with `/v1/chat/completions`). Schema injection on → progressive streaming works.
+- The Batches API and Files API are not implemented.

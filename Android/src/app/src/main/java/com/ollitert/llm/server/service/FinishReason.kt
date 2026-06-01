@@ -27,6 +27,10 @@ object FinishReason {
   const val STOP = "stop"
   const val LENGTH = "length"
   const val TOOL_CALLS = "tool_calls"
+  // Used by the Anthropic /v1/messages response shape — maps to the OAI "stop"
+  // finish reason for the OAI-shape endpoints, but Anthropic clients distinguish
+  // an explicit stop_sequence match from a natural end-of-turn.
+  const val STOP_SEQUENCE = "stop_sequence"
 
   // Token estimation is charLength/4 which can under/overcount.
   // 5% tolerance avoids false negatives at the boundary.
@@ -37,5 +41,16 @@ object FinishReason {
     if (completionTokens <= 0) return STOP
     val threshold = (maxTokens * TOLERANCE).toInt()
     return if (completionTokens >= threshold) LENGTH else STOP
+  }
+
+  /**
+   * Like [infer], but reports [STOP_SEQUENCE] when the streaming truncator matched
+   * a configured stop string. Length-vs-stop precedence is unchanged — stop_sequence
+   * only takes priority over a natural STOP, never over LENGTH (a model that hit
+   * max_tokens and happened to spell out a stop sequence is still length-bound).
+   */
+  fun inferWithStopSequence(completionTokens: Int, maxTokens: Int?, stopSequenceTriggered: Boolean): String {
+    val base = infer(completionTokens, maxTokens)
+    return if (base == STOP && stopSequenceTriggered) STOP_SEQUENCE else base
   }
 }

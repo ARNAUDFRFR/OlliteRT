@@ -79,6 +79,12 @@ const val BLOCKING_TIMEOUT_SECONDS = 30L
 // Without the buffer, both timeouts race and gateway-bug hangs are masked.
 // See `InferenceRunner.streamInference` outer wrapper.
 const val STREAM_OUTER_TIMEOUT_SAFETY_BUFFER_SECONDS = 30L
+// Interval between SSE ping events sent during long prefill. Anthropic's Messages
+// streaming spec documents `event: ping` as a connection-keepalive signal that may
+// be dispersed throughout the response. Without it, Anthropic SDK clients (e.g.
+// Claude Code) close the SSE connection when no bytes arrive for ~30-60s — which
+// kills any request whose prefill exceeds that window on slow on-device inference.
+const val SSE_PING_INTERVAL_MS = 10_000L
 // Maximum time (seconds) to wait for previous model cleanup before initializing a new one.
 const val CLEANUP_AWAIT_TIMEOUT_SECONDS = 15L
 // Maximum time (ms) for runBlocking DataStore reads during service init / keep-alive reload.

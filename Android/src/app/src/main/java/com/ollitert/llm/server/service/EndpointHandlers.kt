@@ -34,6 +34,7 @@ import com.ollitert.llm.server.data.llmSupportAudio
 import com.ollitert.llm.server.data.llmSupportImage
 import com.ollitert.llm.server.data.maxContextTokens
 import com.ollitert.llm.server.data.maxTokensInt
+import com.ollitert.llm.server.runtime.ServerLlmModelHelper
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -110,12 +111,38 @@ class EndpointHandlers(
     logId: String? = null,
     prefs: RequestPrefsSnapshot = RequestPrefsSnapshot(),
   ): HttpResponse {
-    val requestId = nextRequestId()
     captureBody(body)
     val req = try { json.decodeFromString<ChatRequest>(body) }
       catch (e: SerializationException) { return httpBadRequest("Invalid JSON: ${e.message}") }
+    return runChatCompletion(req, captureResponse, logId, prefs, suppressPerModelSystem = false, bodyLength = body.length, endpoint = "/v1/chat/completions")
+  }
+
+  /**
+   * Core chat-completion pipeline. Extracted so the Anthropic /v1/messages handler can
+   * convert its request to ChatRequest and reuse the entire prompt-compaction →
+   * inference → response-shaping flow without duplicating logic.
+   *
+   * Body capture is the caller's responsibility — the captured string is endpoint-specific
+   * (raw OAI body for /v1/chat/completions, raw Anthropic body for /v1/messages).
+   */
+  suspend fun runChatCompletion(
+    req: ChatRequest,
+    captureResponse: (String) -> Unit = {},
+    logId: String? = null,
+    prefs: RequestPrefsSnapshot = RequestPrefsSnapshot(),
+    suppressPerModelSystem: Boolean = false,
+    bodyLength: Int = 0,
+    endpoint: String = "/v1/chat/completions",
+    // When true the streaming branch returns an Anthropic SSE response built by
+    // streamMessagesLlm instead of the OAI streamChatLlm. The non-stream branch
+    // is unaffected — the Anthropic handler re-shapes the OAI JSON response itself.
+    useAnthropicStream: Boolean = false,
+    // Per-request thinking override (null falls back to model.isThinkingEnabled).
+    enableThinkingOverride: Boolean? = null,
+  ): HttpResponse {
+    val requestId = nextRequestId()
     validateNParam(req.n)?.let { (param, msg) ->
-      logEvent("request_rejected id=$requestId endpoint=/v1/chat/completions param=$param value=${req.n}")
+      logEvent("request_rejected id=$requestId endpoint=$endpoint param=$param value=${req.n}")
       return httpBadRequest(msg)
     }
     val toolChoiceStr = PromptBuilder.resolveToolChoice(req.tool_choice)
@@ -127,9 +154,8 @@ class EndpointHandlers(
       is ModelLifecycle.ModelSelection.Error -> return sel.toHttpResponse()
     }
     // Build prompt with progressive compaction if context window is exceeded.
-    // Three independent toggles for progressive prompt compaction:
-    // "Truncate History" (drop older messages), "Compact Tool Schemas" (reduce tool definitions,
-    // useful for Home Assistant), "Trim Prompt" (hard-cut as last resort).
+    // Two independent toggles: "Truncate History" (drop older messages) and
+    // "Trim Prompt" (hard-cut as last resort).
     val tools = req.tools.orEmpty()
     val hasTools = tools.isNotEmpty() && toolChoiceStr != "none"
     val useSchemaInjection = hasTools && prefs.schemaInjectionToolCalling
@@ -153,12 +179,11 @@ class EndpointHandlers(
       chatTemplate = null,
       maxContext = maxContext,
       truncateHistory = truncateHistory,
-      compactToolSchemas = false,
       trimPrompts = trimPrompts,
       interleaveImagePlaceholders = hasImageParts,
     )
 
-    logCompactionResult(compactionResult, requestId, "/v1/chat/completions", logId, maxContext, logEvent, compactionLogUpdater(logId))
+    logCompactionResult(compactionResult, requestId, endpoint, logId, maxContext, logEvent, compactionLogUpdater(logId))
 
     // Apply response_format JSON mode prompt injection
     var prompt = if (useSchemaInjection) {
@@ -177,11 +202,31 @@ class EndpointHandlers(
       modelLifecycle.decodeAudioData(audioData)
     } else emptyList()
 
-    logEvent("request_start id=$requestId endpoint=/v1/chat/completions bodyLength=${body.length} promptChars=${prompt.length} images=${images.size} audio=${audioClips.size} model=$requestedId resolved=${model.name}")
+    logEvent("request_start id=$requestId endpoint=$endpoint bodyLength=$bodyLength promptChars=${prompt.length} images=${images.size} audio=${audioClips.size} model=$requestedId resolved=${model.name}")
 
     if (prompt.isBlank() && images.isEmpty() && audioClips.isEmpty()) {
-      logEvent("request_empty id=$requestId endpoint=/v1/chat/completions")
+      logEvent("request_empty id=$requestId endpoint=$endpoint")
       return emptyChatResponse(model.name, stream = req.stream == true, logId = logId)
+    }
+
+    // KV-cache reuse detection. LiteRT's Conversation API renders the prompt
+    // template incrementally — when we keep the same Conversation alive and
+    // append the new user turn via Message.user(text), the SDK only prefills
+    // the new portion. We detect "this request extends the previous conversation"
+    // by comparing the request's history (all but the last user message) to the
+    // server's cached state, and log the decision so we can iterate before
+    // wiring the incremental dispatch path.
+    val incrementalDecision = decideIncrementalReuse(
+      modelName = model.name,
+      messages = req.messages,
+      systemPromptHash = if (suppressPerModelSystem) 0 else (req.messages.firstOrNull { it.role == "system" }?.content?.text?.hashCode() ?: 0),
+      toolsHash = tools.hashCode(),
+      hasTools = hasTools,
+      hasImages = images.isNotEmpty(),
+      hasAudio = audioClips.isNotEmpty(),
+    )
+    if (prefs.verboseDebug) {
+      logEvent("request_incremental id=$requestId endpoint=$endpoint decision=${incrementalDecision.kind} reason=${incrementalDecision.reason}")
     }
 
     val includeUsage = req.stream_options?.include_usage == true
@@ -190,12 +235,56 @@ class EndpointHandlers(
     val sampler = resolveSamplerOverrides(model, prefs, req.temperature, req.top_p, req.top_k, effectiveMaxTokens, logId)
 
     val stopSeqs = req.stop.ifEmpty { null }
+    val incrementalUserText = if (incrementalDecision.kind == IncrementalDecision.Kind.EXTEND) {
+      incrementalDecision.newUserText
+    } else null
+    // Update the conversation cache to reflect what the SDK now holds. After this
+    // request completes, the SDK's Conversation will contain exactly the turns we
+    // just sent it (history + new user) plus the assistant reply it generates.
+    // For prefix-matching the next request, we record the user turns we've sent
+    // — assistant text isn't tracked because we don't capture streamed responses
+    // back into this layer, and the next match is on user-turn prefixes only
+    // (see decideIncrementalReuse).
+    val sentTurns = req.messages
+      .filter { it.role != "system" }
+      .map { ServerLlmModelHelper.ConversationTurn(it.role, it.content.text) }
+    ServerLlmModelHelper.updateCachedTurns(
+      model.name,
+      ServerLlmModelHelper.ConversationCacheEntry(
+        turns = sentTurns,
+        systemPromptHash = if (suppressPerModelSystem) 0 else (req.messages.firstOrNull { it.role == "system" }?.content?.text?.hashCode() ?: 0),
+        toolsHash = tools.hashCode(),
+      ),
+    )
     return if (req.stream == true) {
-      inferenceRunner.streamChatLlm(model, prompt, requestId, "/v1/chat/completions", timeoutSeconds = ServerPrefs.getTimeoutChatCompletions(context), images = images, audioClips = audioClips, logId = logId, includeUsage = includeUsage, stopSequences = stopSeqs, tools = if (hasTools) tools else null, configSnapshot = sampler, json = json, prefs = prefs, schemaInjectionProviders = schemaInjectionProviders, schemaInjectionMessages = schemaInjectionMessages)
+      if (useAnthropicStream) {
+        inferenceRunner.streamMessagesLlm(
+          model = model,
+          prompt = prompt,
+          requestId = requestId,
+          endpoint = endpoint,
+          timeoutSeconds = ServerPrefs.getTimeoutChatCompletions(context),
+          images = images,
+          audioClips = audioClips,
+          logId = logId,
+          stopSequences = stopSeqs,
+          tools = if (hasTools) tools else null,
+          configSnapshot = sampler,
+          prefs = prefs,
+          schemaInjectionProviders = schemaInjectionProviders,
+          schemaInjectionMessages = schemaInjectionMessages,
+          suppressPerModelSystem = suppressPerModelSystem,
+          enableThinkingOverride = enableThinkingOverride,
+          requestModelId = requestedId,
+          incrementalUserText = incrementalUserText,
+        )
+      } else {
+        inferenceRunner.streamChatLlm(model, prompt, requestId, endpoint, timeoutSeconds = ServerPrefs.getTimeoutChatCompletions(context), images = images, audioClips = audioClips, logId = logId, includeUsage = includeUsage, stopSequences = stopSeqs, tools = if (hasTools) tools else null, configSnapshot = sampler, json = json, prefs = prefs, schemaInjectionProviders = schemaInjectionProviders, schemaInjectionMessages = schemaInjectionMessages, suppressPerModelSystem = suppressPerModelSystem, enableThinkingOverride = enableThinkingOverride, incrementalUserText = incrementalUserText)
+      }
     } else {
       ServerMetrics.onInferenceStarted()
       var schemaInjectionToolCalls: List<ToolCall> = emptyList()
-      val (rawText, llmError) = inferenceRunner.runLlm(model, prompt, requestId, "/v1/chat/completions", timeoutSeconds = ServerPrefs.getTimeoutChatCompletions(context), images = images, audioClips = audioClips, logId = logId, configSnapshot = sampler, prefs = prefs, schemaInjectionProviders = schemaInjectionProviders, schemaInjectionMessages = schemaInjectionMessages, onNativeToolCalls = if (useSchemaInjection) { calls -> schemaInjectionToolCalls = calls } else null)
+      val (rawText, llmError) = inferenceRunner.runLlm(model, prompt, requestId, endpoint, timeoutSeconds = ServerPrefs.getTimeoutChatCompletions(context), images = images, audioClips = audioClips, logId = logId, configSnapshot = sampler, prefs = prefs, schemaInjectionProviders = schemaInjectionProviders, schemaInjectionMessages = schemaInjectionMessages, onNativeToolCalls = if (useSchemaInjection) { calls -> schemaInjectionToolCalls = calls } else null, suppressPerModelSystem = suppressPerModelSystem, enableThinkingOverride = enableThinkingOverride, incrementalUserText = incrementalUserText)
       ServerMetrics.onInferenceCompleted()
       if (rawText == null) return handleBlockingInferenceError(llmError, logId)
       val (text, _) = InferenceRunner.applyStopSequences(rawText, stopSeqs)
@@ -212,7 +301,7 @@ class EndpointHandlers(
         if (toolCalls.isNotEmpty()) {
           if (logId != null) RequestLogStore.update(logId) { it.copy(hasToolCalls = true) }
           val source = if (useSchemaInjection && schemaInjectionToolCalls.isNotEmpty()) "schema_injection" else "text_parse"
-          logEvent("request_tool_calls id=$requestId endpoint=/v1/chat/completions tools=${toolCalls.joinToString(",") { it.function.name }} count=${toolCalls.size} source=$source")
+          logEvent("request_tool_calls id=$requestId endpoint=$endpoint tools=${toolCalls.joinToString(",") { it.function.name }} count=${toolCalls.size} source=$source")
           val completionTokens = estimateTokens(toolCalls.joinToString("") { it.function.arguments })
           val timings = PayloadBuilders.buildTimings(promptTokens, completionTokens)
           val responseJson = json.encodeToString(PayloadBuilders.chatResponseWithToolCalls(model.name, toolCalls, promptLen = prompt.length, timings = timings))
@@ -600,4 +689,84 @@ internal fun logCompactionResult(
   } else ""
   logEvent("prompt_compacted id=$requestId endpoint=$endpoint strategies=[$details]$tokenSuffix")
   if (logId != null) updateLog(details, result.prompt)
+}
+
+/**
+ * Outcome of the cache-reuse decision for a chat-completion request.
+ *
+ * - [kind] = `EXTEND` means the request's history matches the server's cached
+ *   conversation state and we can append only [newUserText] via the SDK's
+ *   incremental path (KV cache reused, fast TTFB).
+ * - [kind] = `RESET` means the conversation must be (re)built from scratch:
+ *   different conversation, edited history, system prompt or tool change,
+ *   first request, or multimodal input that the incremental path doesn't
+ *   support yet.
+ *
+ * [reason] is a short tag for logging.
+ */
+internal data class IncrementalDecision(
+  val kind: Kind,
+  val reason: String,
+  val newUserText: String? = null,
+) {
+  enum class Kind { EXTEND, RESET }
+}
+
+internal fun decideIncrementalReuse(
+  modelName: String,
+  messages: List<ChatMessage>,
+  systemPromptHash: Int,
+  toolsHash: Int,
+  hasTools: Boolean,
+  hasImages: Boolean,
+  hasAudio: Boolean,
+): IncrementalDecision {
+  // Disable incremental for known-incompatible cases up-front.
+  if (hasImages || hasAudio) return IncrementalDecision(IncrementalDecision.Kind.RESET, "multimodal_unsupported")
+  if (hasTools) return IncrementalDecision(IncrementalDecision.Kind.RESET, "tools_unsupported")
+  if (messages.isEmpty()) return IncrementalDecision(IncrementalDecision.Kind.RESET, "empty_messages")
+
+  // The last message must be a user turn for incremental append.
+  val last = messages.last()
+  if (last.role != "user" || last.content.text.isBlank()) {
+    return IncrementalDecision(IncrementalDecision.Kind.RESET, "last_not_user_text")
+  }
+
+  val cached = ServerLlmModelHelper.getCachedTurns(modelName)
+    ?: return IncrementalDecision(IncrementalDecision.Kind.RESET, "no_cache")
+
+  if (cached.systemPromptHash != systemPromptHash) {
+    return IncrementalDecision(IncrementalDecision.Kind.RESET, "system_prompt_changed")
+  }
+  if (cached.toolsHash != toolsHash) {
+    return IncrementalDecision(IncrementalDecision.Kind.RESET, "tools_changed")
+  }
+
+  // Compare USER turns only. The cache records what the client sent in the prior
+  // request — we don't have the assistant's reply text stored server-side, so
+  // matching the full message list strictly is impossible without capturing
+  // streamed responses. User turns are stable across requests (clients echo them
+  // back verbatim), so a user-turn prefix match is the right granularity.
+  val cachedUserTurns = cached.turns.filter { it.role == "user" }
+  val requestUserTurns = messages.filter { it.role == "user" }
+
+  // Request must extend cache: have all cached user turns as a strict prefix,
+  // plus exactly one new user turn at the end.
+  if (requestUserTurns.size != cachedUserTurns.size + 1) {
+    return IncrementalDecision(IncrementalDecision.Kind.RESET, "user_turn_size_diff:${requestUserTurns.size}_vs_${cachedUserTurns.size}+1")
+  }
+  for (i in cachedUserTurns.indices) {
+    if (requestUserTurns[i].content.text != cachedUserTurns[i].text) {
+      return IncrementalDecision(IncrementalDecision.Kind.RESET, "user_turn_diverged_at_$i")
+    }
+  }
+  if (requestUserTurns.last() !== last) {
+    return IncrementalDecision(IncrementalDecision.Kind.RESET, "last_msg_not_user")
+  }
+
+  return IncrementalDecision(
+    kind = IncrementalDecision.Kind.EXTEND,
+    reason = "history_matches",
+    newUserText = last.content.text,
+  )
 }

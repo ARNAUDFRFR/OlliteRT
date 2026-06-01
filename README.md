@@ -98,6 +98,8 @@ See the **[Model Guide](docs/MODELS.md)** for recommendations, capability detail
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions API (streaming + non-streaming) |
 | `POST` | `/v1/completions` | OpenAI Completions API |
 | `POST` | `/v1/responses` | OpenAI Responses API |
+| `POST` | `/v1/messages` | Anthropic Messages API (streaming + non-streaming) |
+| `POST` | `/v1/messages/count_tokens` | Anthropic input-token estimator |
 | `POST` | `/v1/audio/transcriptions` | Audio transcription |
 | `GET`  | `/v1/models` | List available models |
 | `GET`  | `/v1/models/{id}` | Get detail for a specific model |

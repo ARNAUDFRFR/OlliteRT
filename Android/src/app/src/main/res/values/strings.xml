@@ -83,7 +83,8 @@
   <string name="models_hidden_by_version" translatable="false">%1$s hidden — requires a newer app version</string>
   <string name="retry" translatable="false">Retry</string>
   <string name="wifi_warning_title" translatable="false">No Wi-Fi Connection</string>
-  <string name="wifi_warning_content" translatable="false">The server needs Wi-Fi to accept connections from other devices. You can still start the server, but it will only be reachable via localhost.</string>
+  <string name="wifi_warning_content_prefix" translatable="false">"The server can\'t accept connections from other devices on the network without Wi-Fi. It will still be reachable on this device at "</string>
+  <string name="wifi_warning_content_suffix" translatable="false">" — useful for on-device clients like Termux."</string>
   <string name="wifi_warning_start_anyway" translatable="false">Start anyway</string>
   <string name="view_results" translatable="false">View results</string>
   <plurals name="runs" translatable="false">
@@ -422,7 +423,7 @@
   <string name="settings_card_advanced_settings" translatable="false">Advanced Settings</string>
   <string name="settings_advanced_timeouts_section" translatable="false">Timeouts</string>
   <string name="settings_timeout_chat_completions_label" translatable="false">Chat completions timeout</string>
-  <string name="settings_timeout_chat_completions_desc" translatable="false">Maximum time for /v1/chat/completions requests</string>
+  <string name="settings_timeout_chat_completions_desc" translatable="false">Maximum time for /v1/chat/completions and /v1/messages requests</string>
   <string name="settings_timeout_responses_label" translatable="false">Responses timeout</string>
   <string name="settings_timeout_responses_desc" translatable="false">Maximum time for /v1/responses requests</string>
   <string name="settings_timeout_streaming_label" translatable="false">Streaming timeout</string>
@@ -467,6 +468,7 @@
   <!-- Status: Endpoint card -->
   <string name="status_active_api_endpoint" translatable="false">Active API Endpoint</string>
   <string name="status_endpoint_placeholder" translatable="false">—</string>
+  <string name="status_endpoint_loopback_only" translatable="false">Loopback only — reachable from this device only (no Wi-Fi)</string>
   <string name="status_copy_endpoint_tooltip" translatable="false">Copy endpoint URL</string>
   <string name="status_open_endpoint" translatable="false">Open endpoint in browser</string>
   <string name="status_auth_cors" translatable="false">Auth: %1$s · CORS: %2$s</string>
@@ -1083,8 +1085,8 @@
   <string name="error_storage_insufficient">Insufficient storage to load model (%1$sMB free, need at least %2$sMB). Free up space by deleting unused models or files, then try again.</string>
 
   <!-- ErrorSuggestions: recovery suggestions -->
-  <string name="suggestion_context_overflow">Try enabling prompt compaction (Truncate History, Compact Tool Schemas, or Trim Prompt) in OlliteRT Settings, or send shorter prompts.</string>
-  <string name="suggestion_timeout">Try sending a shorter prompt or restarting the server.</string>
+  <string name="suggestion_context_overflow">Enable \"Truncate Conversation History\" or \"Trim Prompt\" in OlliteRT Settings → Advanced Settings, or send a shorter prompt.</string>
+  <string name="suggestion_timeout">Increase \"Chat completions timeout\" in OlliteRT Settings → Advanced Settings, send a shorter prompt, or restart the server.</string>
   <string name="suggestion_model_not_found">Check the Models screen for available downloaded models.</string>
   <string name="suggestion_model_files_missing">The model files may have been deleted. Try re-downloading the model from the Models screen.</string>
   <string name="suggestion_port_bind_failure">The port is already in use by another app. Close the app occupying the port or change the port number in Settings.</string>
