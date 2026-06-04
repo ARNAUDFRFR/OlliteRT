@@ -1,6 +1,5 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "forkProcessing": "enabled",
   "extends": [
     "config:recommended",
     ":separateMajorReleases",
@@ -17,6 +16,11 @@
       "matchManagers": ["gradle"],
       "matchPackageNames": ["com.google.ai.edge.litertlm:**"],
       "groupName": "LiteRT-LM"
+    },
+    {
+      "matchManagers": ["gradle"],
+      "matchPackagePatterns": ["^org\\.jetbrains\\.kotlin", "^com\\.google\\.devtools\\.ksp", "^com\\.google\\.dagger:hilt"],
+      "groupName": "kotlin-ksp-hilt-group"
     },
     {
       "matchUpdateTypes": ["minor", "patch"],
