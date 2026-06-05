@@ -6,6 +6,9 @@ on:
       - '**'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   JDK_VERSION: '21'
@@ -95,3 +98,20 @@ jobs:
             Android/src/app/build/outputs/apk/stable/release/*.apk
             Android/src/app/build/outputs/apk/stable/debug/*.apk
           retention-days: 14
+
+      - name: Create automatic debug release
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-debug
+          name: Latest Debug Build
+          prerelease: true
+          files: |
+            Android/src/app/build/outputs/apk/stable/release/*.apk
+            Android/src/app/build/outputs/apk/stable/debug/*.apk
+          token: ${{ secrets.GITHUB_TOKEN }}
+          make_latest: false
+          body: |
+            Automatic debug build compiled from branch `main` (commit `${{ github.sha }}`).
+            
+            This release is automatically updated on every successful commit. You can download the raw APK directly below.
