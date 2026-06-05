@@ -105,13 +105,13 @@ jobs:
         with:
           tag_name: latest-debug
           name: Latest Debug Build
-          prerelease: true
+          prerelease: false
           files: |
             Android/src/app/build/outputs/apk/stable/release/*.apk
             Android/src/app/build/outputs/apk/stable/debug/*.apk
           token: ${{ secrets.GITHUB_TOKEN }}
-          make_latest: false
+          make_latest: true
           body: |
-            Automatic debug build compiled from branch `main` (commit `${{ github.sha }}`).
+            Automatic build compiled from branch `main` (commit `${{ github.sha }}`).
             
             This release is automatically updated on every successful commit. You can download the raw APK directly below.
