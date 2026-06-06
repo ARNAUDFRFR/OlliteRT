@@ -91,7 +91,7 @@ jobs:
         run: ./gradlew assembleStableDebug --no-daemon
 
       - name: Upload APK Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: OlliteRT-custom-apk
           path: |
@@ -99,12 +99,22 @@ jobs:
             Android/src/app/build/outputs/apk/stable/debug/*.apk
           retention-days: 14
 
+      - name: Generate release tag
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        id: release_tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          TIMESTAMP=$(date +'%Y%m%d-%H%M')
+          echo "tag=v-${TIMESTAMP}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "name=OlliteRT Build ${TIMESTAMP} (${SHORT_SHA})" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
       - name: Create automatic debug release
         if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest-debug
-          name: Latest Debug Build
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: ${{ steps.release_tag.outputs.name }}
           prerelease: false
           files: |
             Android/src/app/build/outputs/apk/stable/release/*.apk
@@ -114,4 +124,4 @@ jobs:
           body: |
             Automatic build compiled from branch `main` (commit `${{ github.sha }}`).
             
-            This release is automatically updated on every successful commit. You can download the raw APK directly below.
+            You can download the raw APK directly below.
