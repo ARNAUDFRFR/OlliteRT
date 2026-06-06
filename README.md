@@ -14,6 +14,9 @@
     <a href="https://github.com/NightMean/ollitert/releases"><img src="https://img.shields.io/github/downloads/NightMean/ollitert/total?style=flat" alt="Downloads" /></a>
     <a href="https://www.buymeacoffee.com/nightmean"><img src="https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee" /></a>
     <br />
+    <img src="https://img.shields.io/badge/OpenAI_Compatible-412991?logo=openai&logoColor=white" alt="OpenAI Compatible" />
+    <img src="https://img.shields.io/badge/Anthropic_Compatible-D97757?logo=anthropic&logoColor=white" alt="Anthropic Compatible" />
+    <br />  
     <img src="https://img.shields.io/badge/Android_12+-34A853?logo=android&logoColor=white" alt="Android 12+" />
     <a href="LICENSE"><img src="https://img.shields.io/github/license/NightMean/ollitert?style=flat" alt="License" /></a>
   </div>
