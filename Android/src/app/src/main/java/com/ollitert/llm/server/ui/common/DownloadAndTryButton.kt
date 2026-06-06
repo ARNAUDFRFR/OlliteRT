@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material3.AlertDialog
@@ -158,18 +159,23 @@ fun DownloadAndTryButton(
   var downloadStarted by remember { mutableStateOf(false) }
   val sheetState = rememberModalBottomSheetState()
 
+  val isFailed = downloadStatus?.status == ModelDownloadStatusType.FAILED
   val needToDownloadFirst =
-    (downloadStatus?.status == ModelDownloadStatusType.NOT_DOWNLOADED ||
-      downloadStatus?.status == ModelDownloadStatusType.FAILED) &&
+    (downloadStatus?.status == ModelDownloadStatusType.NOT_DOWNLOADED || isFailed) &&
       model.localFileRelativeDirPathOverride.isEmpty()
   val inProgress = downloadStatus?.status == ModelDownloadStatusType.IN_PROGRESS
   val downloadSucceeded = downloadStatus?.status == ModelDownloadStatusType.SUCCEEDED
   val isPartiallyDownloaded = downloadStatus?.status == ModelDownloadStatusType.PARTIALLY_DOWNLOADED
+  // Surface a retryable progress row when a download fails mid-stream so the user
+  // can resume from the partial .tmp via Range request instead of starting over.
+  val failedWithProgress =
+    isFailed && downloadStatus.receivedBytes > 0L && downloadStatus.totalBytes > 0L
   if (downloadStatus?.status == ModelDownloadStatusType.NOT_DOWNLOADED && !checkingToken) {
     downloadStarted = false
   }
   val showDownloadProgress =
-    !downloadSucceeded && (downloadStarted || checkingToken || inProgress || isPartiallyDownloaded)
+    !downloadSucceeded &&
+      (downloadStarted || checkingToken || inProgress || isPartiallyDownloaded || failedWithProgress)
   var curDownloadProgress: Float
 
   // A launcher for requesting notification permission.
@@ -585,6 +591,9 @@ fun DownloadAndTryButton(
           modifier = if (!compact) Modifier.fillMaxWidth() else Modifier.padding(horizontal = 4.dp),
         )
       } else {
+        val percentColor =
+          if (failedWithProgress) MaterialTheme.colorScheme.error
+          else MaterialTheme.colorScheme.onSurface
         Text(
           "${(curDownloadProgress * 100).toInt()}%",
           style =
@@ -592,17 +601,39 @@ fun DownloadAndTryButton(
               // This stops numbers from "jumping around" when being updated.
               fontFeatureSettings = "tnum"
             ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = percentColor,
           modifier = Modifier.padding(start = 12.dp).width(if (compact) 32.dp else 44.dp),
         )
         if (!compact) {
-          val color = MaterialTheme.colorScheme.primary
+          val barColor =
+            if (failedWithProgress) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.primary
           LinearProgressIndicator(
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
             progress = { animatedProgress.value },
-            color = color,
+            color = barColor,
             trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
           )
+        }
+        if (failedWithProgress) {
+          val cbRetry = stringResource(R.string.cd_retry_download_icon)
+          IconButton(
+            onClick = {
+              downloadStarted = true
+              modelManagerViewModel.retryDownloadModel(model = model)
+            },
+            colors =
+              IconButtonDefaults.iconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+              ),
+            modifier = Modifier.semantics { contentDescription = cbRetry },
+          ) {
+            Icon(
+              Icons.Outlined.Refresh,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.onSurface,
+            )
+          }
         }
         val cbStop = stringResource(R.string.cd_stop_icon)
         IconButton(

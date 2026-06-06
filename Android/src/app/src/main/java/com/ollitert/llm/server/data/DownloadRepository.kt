@@ -150,6 +150,10 @@ class DownloadRepository @Inject constructor(
   ) {
     val liveData = workManager.getWorkInfoByIdLiveData(workerId)
     var observer: androidx.lifecycle.Observer<WorkInfo?>? = null
+    // Carry last RUNNING progress into FAILED so the UI can show "failed at 47%"
+    // and offer a Retry that resumes from the existing .tmp instead of starting over.
+    var lastReceivedBytes = 0L
+    var lastTotalBytes = model.totalBytes
     observer = androidx.lifecycle.Observer { workInfo ->
       if (workInfo != null) {
         when (workInfo.state) {
@@ -166,6 +170,8 @@ class DownloadRepository @Inject constructor(
 
             if (!startUnzipping) {
               if (receivedBytes != 0L) {
+                lastReceivedBytes = receivedBytes
+                lastTotalBytes = model.totalBytes
                 onStatusUpdated(
                   model,
                   ModelDownloadStatus(
@@ -219,7 +225,12 @@ class DownloadRepository @Inject constructor(
               }
               onStatusUpdated(
                 model,
-                ModelDownloadStatus(status = status, errorMessage = errorMessage),
+                ModelDownloadStatus(
+                  status = status,
+                  errorMessage = errorMessage,
+                  receivedBytes = if (status == ModelDownloadStatusType.FAILED) lastReceivedBytes else 0L,
+                  totalBytes = if (status == ModelDownloadStatusType.FAILED) lastTotalBytes else 0L,
+                ),
               )
               downloadStartTimeSharedPreferences.edit { remove(model.name) }
             } finally {

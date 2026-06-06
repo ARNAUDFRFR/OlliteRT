@@ -282,6 +282,22 @@ constructor(
     deleteModel(model = model)
   }
 
+  /**
+   * Retry a failed download while preserving the existing .tmp file so the
+   * DownloadWorker can resume from the last byte via an HTTP Range request.
+   * Unlike [downloadModel], this does NOT call [deleteModel] beforehand.
+   */
+  fun retryDownloadModel(model: Model) {
+    setDownloadStatus(
+      curModel = model,
+      status = ModelDownloadStatus(status = ModelDownloadStatusType.IN_PROGRESS),
+    )
+    downloadRepository.downloadModel(
+      model = model,
+      onStatusUpdated = this::setDownloadStatus,
+    )
+  }
+
   fun cancelModelDownloadByName(modelName: String) {
     val model = getAllModels().find { it.name == modelName } ?: return
     cancelDownloadModel(model)
