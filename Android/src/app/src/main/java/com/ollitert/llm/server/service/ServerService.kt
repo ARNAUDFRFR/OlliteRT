@@ -378,6 +378,29 @@ class ServerService : Service() {
    * failed to bind (caller should return START_NOT_STICKY).
    */
   private fun startHttpServer(port: Int, requestedModelName: String): Boolean {
+    // Pre-flight bind test: Ktor's CIO engine binds the socket asynchronously inside a
+    // background coroutine, so a BindException ("Address already in use") thrown during
+    // Ktor start propagates as an uncaught FATAL on a Dispatchers.IO worker — the outer
+    // try/catch around server.start() never sees it. This typically happens when another
+    // installed flavor (dev/beta/stable) is already serving on the same port. Probe the
+    // socket synchronously first so we can fail cleanly with the expected error event.
+    try {
+      java.net.ServerSocket().use { probe ->
+        probe.reuseAddress = false
+        probe.bind(java.net.InetSocketAddress("0.0.0.0", port))
+      }
+    } catch (e: java.io.IOException) {
+      val reason = if (e is java.net.BindException || e.message?.contains("Address already in use") == true)
+        getString(R.string.error_port_in_use, port) else (e.message?.take(LOG_ERROR_PREVIEW_LONG_CHARS) ?: getString(R.string.error_unknown))
+      val msg = getString(R.string.error_server_failed_to_start, reason)
+      Log.e(TAG, "Pre-flight port bind probe failed on port $port: $msg", e)
+      ServerMetrics.onServerError(msg)
+      ServerMetrics.incrementErrorCount(ErrorCategory.NETWORK)
+      RequestLogStore.addEvent(msg, level = LogLevel.ERROR, modelName = requestedModelName, category = EventCategory.SERVER)
+      stopSelf()
+      return false
+    }
+
     server?.stop()
     inferenceExecutor?.shutdownNow()
     val executor = Executors.newSingleThreadExecutor()
